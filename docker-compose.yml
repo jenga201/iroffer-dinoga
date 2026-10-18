@@ -5,15 +5,20 @@ services:
       args:
         IROFFER_USER_ID: ${IROFFER_USER_ID:-1000}
         IROFFER_GROUP_ID: ${IROFFER_GROUP_ID:-1000}
-    image: ${IMAGE_NAME:-iroffer-dinoex}:${IMAGE_TAG:-local}
+    # Pull the CI-built image from GitHub Container Registry:
+    #   docker compose pull && docker compose up -d
+    # (or keep building locally with `docker compose up -d --build`)
+    image: ${IMAGE_NAME:-ghcr.io/jenga201/iroffer-dinoex}:${IMAGE_TAG:-latest}
     container_name: ${CONTAINER_NAME:-iroffer}
     restart: unless-stopped
     tty: true        # iroffer requires a pseudo-TTY for foreground (-k) mode
     env_file:
-      - .env
+      - .env         # all IROFFER_* config-directive variables live here
     volumes:
       - ${CONFIG_DIR}:/home/iroffer
       - ${DATA_DIR}:/data
     ports:
       - ${PORT_RANGE}:${PORT_RANGE}
-
+      # Optional: publish the built-in webserver. Set HTTP_PORT in .env, then
+      # uncomment and adjust (example publishes on localhost only):
+      # - ${HTTP_PORT_PUBLISH:-127.0.0.1:8080}:${HTTP_PORT:-8080}
