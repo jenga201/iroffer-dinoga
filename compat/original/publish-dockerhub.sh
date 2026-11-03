@@ -6,8 +6,8 @@ usage() {
 Build a fresh image and publish it to Docker Hub.
 
 Environment variables:
-  DOCKERHUB_REPO        Docker Hub repo (default: jenga201/iroffer-dinoex).
-  IMAGE_NAME            Local image name (default: iroffer-dinoex).
+  DOCKERHUB_REPO        Docker Hub repo (default: jenga201/iroffer-dinoga).
+  IMAGE_NAME            Local image name (default: iroffer-dinoga).
   IMAGE_TAG             Base image tag before auto-bump (default: local).
   AUTO_INCREMENT_TAG    Auto-bump IMAGE_TAG each run (default: 1).
   UPDATE_ENV_TAG        Persist bumped IMAGE_TAG to .env (default: 1).
@@ -19,7 +19,7 @@ Environment variables:
 
 Examples:
   ./publish-dockerhub.sh
-  DOCKERHUB_REPO=myorg/iroffer-dinoex IMAGE_TAG=v1.2.3 ./publish-dockerhub.sh
+  DOCKERHUB_REPO=myorg/iroffer-dinoga IMAGE_TAG=v1.2.3 ./publish-dockerhub.sh
 EOF
 }
 
@@ -97,7 +97,7 @@ main() {
   require_cmd docker
   load_env_file
 
-  IMAGE_NAME="${IMAGE_NAME:-iroffer-dinoex}"
+  IMAGE_NAME="${IMAGE_NAME:-iroffer-dinoga}"
   IMAGE_TAG="${IMAGE_TAG:-local}"
   AUTO_INCREMENT_TAG="${AUTO_INCREMENT_TAG:-1}"
   UPDATE_ENV_TAG="${UPDATE_ENV_TAG:-1}"
@@ -111,7 +111,7 @@ main() {
     echo "Auto-incremented IMAGE_TAG to ${IMAGE_TAG}"
   fi
 
-  repo="${DOCKERHUB_REPO:-jenga201/iroffer-dinoex}"
+  repo="${DOCKERHUB_REPO:-jenga201/iroffer-dinoga}"
 
   image_ref="${repo}:${IMAGE_TAG}"
 
@@ -140,4 +140,3 @@ main() {
 }
 
 main "$@"
-

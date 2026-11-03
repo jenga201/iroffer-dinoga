@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Generate the env-var tables in entrypoint.sh, the ENV block in the
 Dockerfile, and the directive section of .env.example from the iroffer-dinoex
-source tree pinned by IROFFER_SHA256 in the Dockerfile.
+source tree vendored in src/.
 
 Usage:
     ./scripts/gen_env_tables.py /path/to/iroffer-src [sample.config]
 
-    /path/to/iroffer-src   extracted iroffer-dinoex source (needs src/dinoex_config.c)
+    /path/to/iroffer-src   vendored iroffer-dinoex source (needs src/dinoex_config.c; use ./src)
     sample.config          optional; defaults to <src>/sample.config
 
 What it does:
@@ -25,13 +25,12 @@ What it does:
       sample_info.json   - per-directive docs/examples from sample.config
                            (used to refresh .env.example)
 
-After changing the pinned snapshot (IROFFER_URL/IROFFER_SHA256), re-run this
-script, copy the generated blocks into entrypoint.sh/Dockerfile/.env.example,
-and commit.
+After updating the vendored source in src/, re-run this script, copy the
+generated blocks into entrypoint.sh/Dockerfile/.env.example, and commit.
 
 Known limitation: #ifdef tracking ignores #else/#elif branches (entries in an
 #else branch inherit the enclosing #if condition). Verified harmless for the
-tables in the pinned snapshot.
+tables in the vendored source.
 """
 import json
 import re
@@ -145,7 +144,7 @@ def main():
     def bl(keys, per_line=6):
         return "\n".join("  " + " ".join(keys[i:i + per_line]) for i in range(0, len(keys), per_line))
 
-    block = f"""# ---- BEGIN GENERATED TABLES (from iroffer-dinoex config parser, snapshot pinned in Dockerfile) ----
+    block = f"""# ---- BEGIN GENERATED TABLES (from iroffer-dinoex config parser, vendored in src/) ----
 # Single-value directives: IROFFER_<NAME> replaces the active config line (overrides region, prepended).
 SINGLE_DIRECTIVES=(
 {bl(single)}

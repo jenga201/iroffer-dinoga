@@ -1,0 +1,11 @@
+.git
+.gitmodules
+.github
+.idea
+*.iml
+.env
+.env.*
+!.env.example
+config
+data
+files

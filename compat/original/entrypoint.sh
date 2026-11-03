@@ -2,7 +2,7 @@
 set -e
 
 # ---------------------------------------------------------------------------
-# iroffer-dinoex docker entrypoint
+# iroffer-dinoga docker entrypoint
 #
 # Environment-variable configuration model:
 #   * Every iroffer config directive is supported as IROFFER_<DIRECTIVE>
@@ -25,9 +25,8 @@ set -e
 #   HTTP_PORT        -> http_port    (IROFFER_HTTP_PORT wins if set)
 #
 # Tables below were generated from the config parse tables in
-# src/dinoex_config.c of the iroffer-dinoex snapshot pinned by
-# IROFFER_SHA256 in the Dockerfile. Regenerate with
-# scripts/gen_env_tables.py after changing the pinned snapshot.
+# src/dinoex_config.c of the iroffer-dinoex source vendored in src/.
+# Regenerate with scripts/gen_env_tables.py after updating src/.
 # ---------------------------------------------------------------------------
 
 # Static in-container paths/user for deployment stability.
@@ -54,7 +53,7 @@ OVERRIDES_END="# END IROFFER ENV OVERRIDES"
 NETWORKS_BEGIN="# BEGIN IROFFER ENV NETWORKS (managed by entrypoint.sh - do not edit)"
 NETWORKS_END="# END IROFFER ENV NETWORKS"
 
-# ---- BEGIN GENERATED TABLES (from iroffer-dinoex config parser, snapshot pinned in Dockerfile) ----
+# ---- BEGIN GENERATED TABLES (from iroffer-dinoex config parser, vendored in src/) ----
 # Single-value directives: IROFFER_<NAME> replaces the active config line (overrides region, prepended).
 SINGLE_DIRECTIVES=(
   adddir_min_size admin_job_done_file admin_job_file adminlevel adminpass announce_seperator

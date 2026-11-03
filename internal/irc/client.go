@@ -1,0 +1,1002 @@
+// Package irc is the multi-network IRC front-end of the bot: it connects to
+// one or more IRC networks, routes XDCC/SXDCC/CTCP commands, and drives DCC
+// transfers on top of the shared packlist/queue/admin state.
+package irc
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/jenga201/dinoga/internal/acl"
+	"github.com/jenga201/dinoga/internal/admin"
+	"github.com/jenga201/dinoga/internal/bounce"
+	"github.com/jenga201/dinoga/internal/config"
+	"github.com/jenga201/dinoga/internal/dcc"
+	"github.com/jenga201/dinoga/internal/packs"
+	"github.com/jenga201/dinoga/internal/queue"
+	"github.com/jenga201/dinoga/internal/state"
+	"github.com/jenga201/dinoga/internal/sxdcc"
+	throttle "github.com/jenga201/dinoga/internal/transfer"
+	"github.com/jenga201/dinoga/internal/web"
+	"github.com/jenga201/dinoga/internal/xdcc"
+)
+
+const (
+	defaultReconnectDelay = 30 * time.Second
+	maxReconnectDelay     = 30 * time.Minute
+)
+
+// transfer tracks one DCC send (active or passive) plus its queue release.
+type transfer struct {
+	nick    string
+	name    string
+	path    string
+	size    int64
+	port    int          // active listener port (0 for passive)
+	token   int          // protocol token used for passive/resume matching
+	ln      net.Listener // nil for passive
+	passive bool
+	offset  int64  // resume position (mutated under tmu)
+	release func() // queue slot release (set for passive transfers)
+	tb      *throttle.TokenBucket
+}
+
+// queueItem is a queued pack request awaiting a transfer slot.
+type queueItem struct {
+	nick string
+	pack packs.Pack
+	nc   *netConn // the network the requester is on
+}
+
+// Client holds the shared bot state across all networks.
+type Client struct {
+	cfg config.Config
+
+	mu       sync.RWMutex // guards packlist
+	packlist []packs.Pack
+
+	tmu       sync.Mutex // guards transfers/nextToken
+	transfers map[int]*transfer
+	nextToken int
+
+	q       *queue.Manager
+	qmu     sync.Mutex
+	pending map[string]*queueItem
+	nextKey int64
+
+	adminMu  sync.Mutex
+	adminSrv *admin.Server
+
+	sxdcc     *sxdcc.Server
+	sxdccPort int
+
+	acl *acl.Matcher
+
+	globalTB *throttle.TokenBucket // overall transfer speed cap (nil = unlimited)
+}
+
+// New returns a Client configured by cfg.
+func New(cfg config.Config) *Client {
+	m := queue.New(queue.Config{
+		Slots:                  cfg.SlotsMax,
+		QueueSize:              cfg.QueueSize,
+		IdleQueueSize:          cfg.IdleQueueSize,
+		MaxTransfersPerPerson:  cfg.MaxTransfersPerPerson,
+		MaxQueuedPerPerson:     cfg.MaxQueuedPerPerson,
+		MaxIdleQueuedPerPerson: cfg.MaxIdleQueuedPerPerson,
+	})
+	c := &Client{
+		cfg:       cfg,
+		transfers: map[int]*transfer{},
+		pending:   map[string]*queueItem{},
+		q:         m,
+		acl:       acl.New(cfg.XDCCAllow, cfg.XDCCDeny),
+	}
+	if cfg.OverallMaxSpeed > 0 {
+		c.globalTB = throttle.NewTokenBucket(cfg.OverallMaxSpeed)
+	}
+	return c
+}
+
+// Run starts the shared services and one connection goroutine per network,
+// blocking until ctx is cancelled.
+func (c *Client) Run(ctx context.Context) error {
+	c.startWorkers()
+
+	if err := c.startSXDCC(); err != nil {
+		log.Printf("sxdcc: %v", err)
+	}
+	if err := c.startWeb(); err != nil {
+		log.Printf("web: %v", err)
+	}
+	if err := c.startAdmin(); err != nil {
+		log.Printf("admin: %v", err)
+	}
+
+	if err := c.scan(); err != nil {
+		log.Printf("initial scan of %s: %v", c.cfg.FileDir, err)
+	}
+	if c.cfg.AutoAdd > 0 {
+		go c.rescanLoop(ctx, time.Duration(c.cfg.AutoAdd)*time.Second)
+	}
+
+	for _, net := range c.cfg.Networks {
+		nc := &netConn{c: c, net: net}
+		go nc.run(ctx)
+	}
+
+	<-ctx.Done()
+	return nil
+}
+
+// netConn is a single IRC server connection. All XDCC/SXDCC/CTCP handling for
+// that network runs through its read loop, writing responses to its own socket.
+type netConn struct {
+	c        *Client
+	net      config.Network
+	mu       sync.Mutex // guards conn
+	conn     net.Conn
+	failures int // consecutive disconnects (reset on successful registration; run goroutine only)
+}
+
+func (nc *netConn) writef(format string, args ...any) {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+	if nc.conn == nil {
+		return
+	}
+	fmt.Fprintf(nc.conn, format+"\r\n", args...)
+}
+
+func (nc *netConn) run(ctx context.Context) {
+	if nc.c.cfg.PeriodicMsg != "" && nc.c.cfg.PeriodicInterval > 0 {
+		go nc.periodicLoop(ctx, time.Duration(nc.c.cfg.PeriodicInterval)*time.Second)
+	}
+
+	base := time.Duration(nc.c.cfg.ReconnectDelay) * time.Second
+	if base <= 0 {
+		base = defaultReconnectDelay
+	}
+
+	for {
+		err := nc.runOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		nc.failures++
+		delay := reconnectDelay(base, nc.failures)
+		log.Printf("network %s: disconnected (%v); reconnect #%d in %v", nc.net.Server, err, nc.failures, delay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+	}
+}
+
+// reconnectDelay returns the exponential-backoff delay for a given number of
+// consecutive failures, capped at maxReconnectDelay (30 minutes). A network
+// that never reaches registration backs off quickly instead of being retried
+// every base interval.
+func reconnectDelay(base time.Duration, failures int) time.Duration {
+	d := base
+	for i := 2; i <= failures && d < maxReconnectDelay; i++ {
+		d *= 2
+		if d > maxReconnectDelay {
+			d = maxReconnectDelay
+		}
+	}
+	return d
+}
+
+func (nc *netConn) runOnce(ctx context.Context) error {
+	addr := net.JoinHostPort(nc.net.Server, strconv.Itoa(nc.net.Port))
+	var (
+		conn net.Conn
+		err  error
+	)
+	if nc.net.SSL {
+		conn, err = tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true})
+	} else {
+		conn, err = net.Dial("tcp", addr)
+	}
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", addr, err)
+	}
+
+	nc.mu.Lock()
+	nc.conn = conn
+	nc.mu.Unlock()
+	defer func() {
+		nc.mu.Lock()
+		nc.conn = nil
+		nc.mu.Unlock()
+		conn.Close()
+	}()
+
+	if nc.net.SASLPass != "" {
+		nc.writef("CAP REQ :sasl")
+	}
+	nc.writef("NICK %s", nc.net.Nick)
+	nc.writef("USER %s 0 * :%s", nc.net.Nick, nc.net.Nick)
+	return nc.readLoop(conn)
+}
+
+func (nc *netConn) readLoop(conn net.Conn) error {
+	r := bufio.NewReader(conn)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		nc.handle(strings.TrimRight(line, "\r\n"))
+	}
+}
+
+func (nc *netConn) handle(line string) {
+	if strings.HasPrefix(line, "PING") {
+		nc.writef("PONG %s", strings.TrimSpace(strings.TrimPrefix(line, "PING")))
+		return
+	}
+
+	sender := ""
+	rest := line
+	if strings.HasPrefix(line, ":") {
+		i := strings.IndexByte(line, ' ')
+		if i < 0 {
+			return
+		}
+		sender = line[1:i]
+		rest = line[i+1:]
+	}
+
+	parts := strings.SplitN(rest, " ", 2)
+	cmd := parts[0]
+	args := ""
+	if len(parts) == 2 {
+		args = parts[1]
+	}
+
+	switch cmd {
+	case "001":
+		nc.failures = 0
+		log.Printf("network %s: registered as %s", nc.net.Server, nc.net.Nick)
+		nc.join()
+	case "CAP":
+		if strings.Contains(args, "sasl") && strings.Contains(args, "ACK") {
+			nc.writef("AUTHENTICATE PLAIN")
+		}
+	case "AUTHENTICATE":
+		if strings.TrimSpace(args) == "+" {
+			nc.writef("AUTHENTICATE %s", saslPlain(nc.saslAccount(), nc.net.SASLPass))
+		}
+	case "900", "903":
+		nc.writef("CAP END")
+		log.Printf("network %s: SASL authenticated", nc.net.Server)
+	case "904", "905", "906", "907":
+		nc.writef("CAP END")
+		log.Printf("network %s: SASL failed (%s)", nc.net.Server, cmd)
+	case "PRIVMSG":
+		nc.handlePrivmsg(sender, args)
+	}
+}
+
+func (nc *netConn) join() {
+	if nc.net.Key == "" {
+		nc.writef("JOIN %s", nc.net.Channel)
+	} else {
+		nc.writef("JOIN %s %s", nc.net.Channel, nc.net.Key)
+	}
+	if h := nc.c.cfg.Headline; h != "" {
+		nc.writef("PRIVMSG %s :%s", nc.net.Channel, h)
+	}
+}
+
+func (nc *netConn) handlePrivmsg(sender, args string) {
+	target := args
+	message := ""
+	if i := strings.Index(args, " :"); i >= 0 {
+		target = args[:i]
+		message = args[i+2:]
+	}
+	if !strings.EqualFold(target, nc.net.Nick) {
+		return
+	}
+
+	from := nick(sender)
+	if strings.HasPrefix(message, "\x01") && strings.HasSuffix(message, "\x01") && len(message) >= 2 {
+		nc.handleCTCP(from, message[1:len(message)-1])
+		return
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(message)), "sxdcc") {
+		nc.handleSXDCC(from, message)
+		return
+	}
+	if isDownload(message) && nc.c.acl != nil && !nc.c.acl.Empty() && !nc.c.acl.Allowed(sender) {
+		nc.Notice(from, "** You are not authorized to download from this bot **")
+		return
+	}
+	xdcc.Handle(nc, from, message)
+}
+
+// isDownload reports whether a private message is a download request (as
+// opposed to list/info/owner), for hostmask access control.
+func isDownload(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(lower, "xdcc send") || strings.HasPrefix(lower, "xdcc batch")
+}
+
+func nick(sender string) string {
+	if i := strings.IndexByte(sender, '!'); i >= 0 {
+		return sender[:i]
+	}
+	if i := strings.IndexByte(sender, '@'); i >= 0 {
+		return sender[:i]
+	}
+	return sender
+}
+
+// saslAccount returns the SASL authentication identity (defaults to the nick).
+func (nc *netConn) saslAccount() string {
+	if nc.net.SASLUser != "" {
+		return nc.net.SASLUser
+	}
+	return nc.net.Nick
+}
+
+// saslPlain encodes the SASL PLAIN (RFC 4616) message authzid\0authcid\0passwd,
+// where authzid and authcid are both the account (the common IRC/NickServ case).
+func saslPlain(account, pass string) string {
+	raw := account + "\x00" + account + "\x00" + pass
+	return base64.StdEncoding.EncodeToString([]byte(raw))
+}
+
+func (nc *netConn) periodicLoop(ctx context.Context, d time.Duration) {
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			nc.writef("PRIVMSG %s :%s", nc.net.Channel, nc.c.cfg.PeriodicMsg)
+		}
+	}
+}
+
+// --- CTCP (DCC) handling ---
+
+func (nc *netConn) handleCTCP(from, ctcp string) {
+	fields := strings.Fields(ctcp)
+	if len(fields) < 2 || !strings.EqualFold(fields[0], "DCC") {
+		return
+	}
+	switch strings.ToUpper(fields[1]) {
+	case "SEND":
+		nc.handleDCCSend(from, fields)
+	case "RESUME":
+		nc.handleDCCResume(from, fields)
+	case "CHAT":
+		nc.handleDCCChat(from, fields)
+	}
+}
+
+func (nc *netConn) handleDCCSend(from string, f []string) {
+	if len(f) < 6 {
+		return
+	}
+	filename := f[2]
+	port, err := strconv.Atoi(f[4])
+	if err != nil {
+		return
+	}
+
+	// Case 1: a passive reverse-send whose token matches a pending transfer.
+	if len(f) >= 7 {
+		if token, err := strconv.Atoi(f[6]); err == nil {
+			c := nc.c
+			c.tmu.Lock()
+			tr := c.transfers[token]
+			if tr != nil && tr.passive && strings.EqualFold(tr.nick, from) {
+				delete(c.transfers, token)
+				offset := tr.offset
+				release := tr.release
+				c.tmu.Unlock()
+				ip := dccIP(f[3])
+				go func() {
+					defer func() {
+						if release != nil {
+							release()
+						}
+					}()
+					if err := dcc.ConnectAndSend(ip, port, tr.path, offset); err != nil {
+						log.Printf("passive send to %s failed: %v", from, err)
+					}
+				}()
+				return
+			}
+			c.tmu.Unlock()
+		}
+	}
+
+	// Case 2: upload offer.
+	if nc.c.cfg.UploadDir == "" {
+		return
+	}
+	if len(f) >= 6 && nc.c.cfg.UploadMaxSize > 0 {
+		if size, err := strconv.ParseInt(f[5], 10, 64); err == nil && size > nc.c.cfg.UploadMaxSize {
+			nc.Notice(from, "** Upload rejected: file too large **")
+			return
+		}
+	}
+	go nc.c.receiveUpload(from, filename, dccIP(f[3]), port)
+}
+
+func (nc *netConn) handleDCCResume(from string, f []string) {
+	if len(f) < 5 {
+		return
+	}
+	filename := f[2]
+	portStr := f[3]
+	position, err := strconv.ParseInt(f[4], 10, 64)
+	if err != nil {
+		return
+	}
+	token := ""
+	if len(f) >= 6 {
+		token = f[5]
+	}
+
+	c := nc.c
+	c.tmu.Lock()
+	var tr *transfer
+	if token != "" {
+		if id, err := strconv.Atoi(token); err == nil {
+			tr = c.transfers[id]
+		}
+	}
+	if tr == nil {
+		port, _ := strconv.Atoi(portStr)
+		for _, t := range c.transfers {
+			if strings.EqualFold(t.nick, from) && !t.passive && t.port == port &&
+				(t.name == filename || t.name == filepath.Base(filename)) {
+				tr = t
+				break
+			}
+		}
+	}
+	if tr == nil || position >= tr.size {
+		c.tmu.Unlock()
+		nc.Notice(from, "DCC Resume Denied, unable to find transfer")
+		return
+	}
+	tr.offset = position
+	c.tmu.Unlock()
+
+	nc.Privmsg(from, dcc.BuildDCCAccept(filename, portStr, position, token))
+	log.Printf("resume accepted: %s @ %d (port %s)", filename, position, portStr)
+}
+
+func (nc *netConn) handleDCCChat(from string, f []string) {
+	if len(f) < 5 {
+		return
+	}
+	ip := dccIP(f[3])
+	go nc.c.serveDCCChat(from, net.JoinHostPort(ip, f[4]))
+}
+
+func (nc *netConn) handleSXDCC(from, message string) {
+	s := nc.c.sxdcc
+	if s == nil {
+		nc.Notice(from, "** SXDCC is not enabled **")
+		return
+	}
+	line, _, err := s.Rendezvous(nc.c.sxdccPort)
+	if err != nil {
+		nc.Notice(from, "** SXDCC error: "+err.Error()+" **")
+		return
+	}
+	nc.Notice(from, line)
+}
+
+// --- xdcc.Client implementation (per network) ---
+
+func (nc *netConn) Notice(target, msg string) {
+	nc.writef("NOTICE %s :%s", target, msg)
+}
+
+func (nc *netConn) Privmsg(target, msg string) {
+	nc.writef("PRIVMSG %s :%s", target, msg)
+}
+
+func (nc *netConn) Packlist() []packs.Pack {
+	return nc.c.Packlist()
+}
+
+func (nc *netConn) SendPack(target string, p packs.Pack) error {
+	return nc.c.SendPack(nc, target, p)
+}
+
+func (nc *netConn) CancelQueued(target string) bool {
+	return nc.c.CancelQueued(target)
+}
+
+// --- shared state ---
+
+func (c *Client) scan() error {
+	pl, err := packs.Scan(c.cfg.FileDir, c.scanOptions()...)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.packlist = pl
+	c.mu.Unlock()
+	log.Printf("packlist: %d pack(s) from %s", len(pl), c.cfg.FileDir)
+	c.persistState(pl)
+	return nil
+}
+
+// scanOptions builds the packs.Scan option list from the configured filters
+// (noduplicatefiles, adddir_exclude/match, adddir_min_size).
+func (c *Client) scanOptions() []packs.Option {
+	var opts []packs.Option
+	if c.cfg.NoDuplicateFiles {
+		opts = append(opts, packs.WithDedup())
+	}
+	if len(c.cfg.AddDirExclude) > 0 {
+		opts = append(opts, packs.WithExclude(c.cfg.AddDirExclude...))
+	}
+	if len(c.cfg.AddDirMatch) > 0 {
+		opts = append(opts, packs.WithMatch(c.cfg.AddDirMatch...))
+	}
+	if c.cfg.AddDirMinSize > 0 {
+		opts = append(opts, packs.WithMinSize(c.cfg.AddDirMinSize))
+	}
+	return opts
+}
+
+func (c *Client) persistState(pl []packs.Pack) {
+	if c.cfg.StateFile == "" {
+		return
+	}
+	recs := make([]state.PackRecord, len(pl))
+	for i, p := range pl {
+		recs[i] = state.PackRecord{Number: p.Number, Name: p.Name, Path: p.Path, Size: p.Size}
+	}
+	if err := state.Save(c.cfg.StateFile, &state.File{Packs: recs}); err != nil {
+		log.Printf("state save: %v", err)
+	}
+}
+
+func (c *Client) rescanLoop(ctx context.Context, d time.Duration) {
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := c.scan(); err != nil {
+				log.Printf("rescan: %v", err)
+			}
+		}
+	}
+}
+
+func (c *Client) startWorkers() {
+	n := c.cfg.SlotsMax
+	if n < 1 {
+		n = 1
+	}
+	for i := 0; i < n; i++ {
+		go c.serveQueue()
+	}
+}
+
+func (c *Client) serveQueue() {
+	for {
+		_, key, release := c.q.Wait()
+		item := c.takePending(key)
+		if item == nil {
+			release()
+			continue
+		}
+		c.ServeTransfer(item, release)
+	}
+}
+
+func (c *Client) takePending(key string) *queueItem {
+	c.qmu.Lock()
+	defer c.qmu.Unlock()
+	item := c.pending[key]
+	delete(c.pending, key)
+	return item
+}
+
+// CancelQueued removes the target's oldest queued (not yet started) transfer.
+func (c *Client) CancelQueued(target string) bool {
+	c.qmu.Lock()
+	defer c.qmu.Unlock()
+	for key, item := range c.pending {
+		if item.nick == target {
+			delete(c.pending, key)
+			c.q.Cancel(target, key)
+			return true
+		}
+	}
+	return false
+}
+
+// SendPack enqueues a pack for delivery on the given network.
+func (c *Client) SendPack(nc *netConn, target string, p packs.Pack) error {
+	key := strconv.FormatInt(atomic.AddInt64(&c.nextKey, 1), 10)
+	c.qmu.Lock()
+	c.pending[key] = &queueItem{nick: target, pack: p, nc: nc}
+	c.qmu.Unlock()
+
+	pos, err := c.q.Submit(target, key, false)
+	if err != nil {
+		c.qmu.Lock()
+		delete(c.pending, key)
+		c.qmu.Unlock()
+		return err
+	}
+	if pos > 1 {
+		nc.Notice(target, fmt.Sprintf("** All slots full, queued as #%d **", pos))
+	}
+	return nil
+}
+
+// ServeTransfer performs the actual DCC transfer for a queued item.
+func (c *Client) ServeTransfer(item *queueItem, release func()) {
+	p := item.pack
+	ipInt, err := dcc.IPToInt(c.cfg.DCCIP)
+	if err != nil {
+		release()
+		item.nc.Notice(item.nick, "** Send failed: "+err.Error()+" **")
+		return
+	}
+
+	tr := &transfer{nick: item.nick, name: p.Name, path: p.Path, size: p.Size, passive: c.cfg.PassiveDCC, release: release}
+	if c.cfg.TransferMaxSpeed > 0 {
+		tr.tb = throttle.NewTokenBucket(c.cfg.TransferMaxSpeed)
+	}
+
+	if tr.passive {
+		c.tmu.Lock()
+		c.nextToken++
+		tr.token = c.nextToken
+		c.transfers[tr.token] = tr
+		c.tmu.Unlock()
+		item.nc.Privmsg(item.nick, dcc.BuildPassiveDCCSend(p.Name, ipInt, p.Size, tr.token))
+		return
+	}
+
+	ln, port, err := dcc.Listen(c.cfg.PortStart, c.cfg.PortLimit)
+	if err != nil {
+		release()
+		item.nc.Notice(item.nick, "** Send failed: "+err.Error()+" **")
+		return
+	}
+	tr.ln = ln
+	tr.port = port
+
+	c.tmu.Lock()
+	c.nextToken++
+	tr.token = c.nextToken
+	c.transfers[tr.token] = tr
+	c.tmu.Unlock()
+
+	item.nc.Privmsg(item.nick, dcc.BuildDCCSend(p.Name, ipInt, port, p.Size))
+	c.serveActive(tr)
+	release()
+}
+
+func (c *Client) serveActive(tr *transfer) {
+	defer func() {
+		if tr.ln != nil {
+			tr.ln.Close()
+		}
+		c.removeTransfer(tr.token)
+	}()
+	conn, err := tr.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	c.tmu.Lock()
+	offset := tr.offset
+	c.tmu.Unlock()
+
+	w := io.Writer(conn)
+	if tr.tb != nil {
+		w = throttle.NewThrottledWriter(w, tr.tb)
+	}
+	if c.globalTB != nil {
+		w = throttle.NewThrottledWriter(w, c.globalTB)
+	}
+	if err := dcc.StreamTo(w, tr.path, offset); err != nil {
+		log.Printf("send %s failed: %v", tr.name, err)
+	}
+}
+
+func (c *Client) removeTransfer(token int) {
+	c.tmu.Lock()
+	delete(c.transfers, token)
+	c.tmu.Unlock()
+}
+
+func dccIP(s string) string {
+	if strings.Contains(s, ".") {
+		return s
+	}
+	if v, err := strconv.ParseUint(s, 10, 32); err == nil {
+		return dcc.IPFromInt(uint32(v))
+	}
+	return s
+}
+
+func (c *Client) receiveUpload(from, filename, ip string, port int) {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), 15*time.Second)
+	if err != nil {
+		log.Printf("upload connect to %s failed: %v", from, err)
+		return
+	}
+	defer conn.Close()
+
+	safe := filepath.Base(filename)
+	if err := os.MkdirAll(c.cfg.UploadDir, 0o755); err != nil {
+		log.Printf("upload mkdir: %v", err)
+		return
+	}
+	f, err := os.Create(filepath.Join(c.cfg.UploadDir, safe))
+	if err != nil {
+		log.Printf("upload create: %v", err)
+		return
+	}
+	defer f.Close()
+
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			if _, werr := f.Write(buf[:n]); werr != nil {
+				log.Printf("upload write: %v", werr)
+				return
+			}
+			total += int64(n)
+			var ack [4]byte
+			t := uint32(total)
+			ack[0] = byte(t >> 24)
+			ack[1] = byte(t >> 16)
+			ack[2] = byte(t >> 8)
+			ack[3] = byte(t)
+			if _, werr := conn.Write(ack[:]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Printf("upload read: %v", err)
+			return
+		}
+	}
+	log.Printf("upload from %s: %s (%d bytes)", from, safe, total)
+}
+
+func (c *Client) serveDCCChat(from, addr string) {
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		log.Printf("dcc chat to %s failed: %v", from, err)
+		return
+	}
+	defer conn.Close()
+
+	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	send := func(s string) { _, _ = rw.WriteString(s + "\r\n"); _ = rw.Flush() }
+
+	send(fmt.Sprintf("** Dinoga DCC chat for %s **", from))
+	send(fmt.Sprintf("** %d pack(s) **", len(c.Packlist())))
+	for {
+		line, err := rw.ReadString('\n')
+		if err != nil {
+			return
+		}
+		switch strings.ToLower(strings.TrimRight(line, "\r\n \t")) {
+		case "status":
+			send(fmt.Sprintf("packs: %d", len(c.Packlist())))
+		case "list":
+			pl := c.Packlist()
+			for i, p := range pl {
+				if i >= 20 {
+					break
+				}
+				send(fmt.Sprintf("#%d [%d] %s", p.Number, p.Size, p.Name))
+			}
+		case "quit", "exit", "close":
+			return
+		}
+	}
+}
+
+// --- SXDCC / web / admin ---
+
+func (c *Client) startSXDCC() error {
+	if !c.cfg.SXDCCEnable {
+		return nil
+	}
+	certFile := c.cfg.CertFile
+	keyFile := c.cfg.KeyFile
+	if certFile == "" {
+		certFile = "/home/dinoga/certs/sxdcc-cert.pem"
+	}
+	if keyFile == "" {
+		keyFile = "/home/dinoga/certs/sxdcc-key.pem"
+	}
+	if c.cfg.DCCIP == "" {
+		return fmt.Errorf("sxdcc requires usenatip (public IP)")
+	}
+	sxdccCfg := sxdcc.Config{
+		CertFile:  certFile,
+		KeyFile:   keyFile,
+		IP:        c.cfg.DCCIP,
+		PortStart: c.cfg.PortStart,
+		PortLimit: c.cfg.PortLimit,
+		Passive:   c.cfg.PassiveDCC,
+		Slot:      c.q,
+	}
+	if c.cfg.SXDCCBounce != "" {
+		sxdccCfg.AdvertiseIP = c.cfg.SXDCCBounce
+		sxdccCfg.NewListener = c.sxdccBounceFactory()
+	}
+	s, err := sxdcc.New(c, sxdccCfg)
+	if err != nil {
+		return err
+	}
+	ln, port, err := s.Listen()
+	if err != nil {
+		return err
+	}
+	c.sxdcc = s
+	c.sxdccPort = port
+	log.Printf("sxdcc: listening on port %d, pin %s", port, s.Pin())
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			log.Printf("sxdcc: %v", err)
+		}
+	}()
+	return nil
+}
+
+// sxdccBounceFactory returns a listener factory that registers each SXDCC
+// listener as a reverse-tunnel port on the configured bounce relay, so the bot
+// needs no public inbound ports. The advertised ports reuse the DCC tcprange.
+func (c *Client) sxdccBounceFactory() func() (net.Listener, int, error) {
+	next := c.cfg.PortStart
+	return func() (net.Listener, int, error) {
+		if next > c.cfg.PortLimit {
+			return nil, 0, fmt.Errorf("bounce: no public port left in %d-%d", c.cfg.PortStart, c.cfg.PortLimit)
+		}
+		port := next
+		next++
+		ln, err := bounce.New(c.cfg.SXDCCTunnel, c.cfg.SXDCCTunnelSecret, port)
+		if err != nil {
+			return nil, 0, err
+		}
+		return ln, port, nil
+	}
+}
+
+func (c *Client) startWeb() error {
+	if !c.cfg.HTTPEnable {
+		return nil
+	}
+	allow, err := web.ParseCIDRs(c.cfg.HTTPAllow)
+	if err != nil {
+		return err
+	}
+	deny, err := web.ParseCIDRs(c.cfg.HTTPDeny)
+	if err != nil {
+		return err
+	}
+	handler := web.New(c.Packlist, web.Config{Allow: allow, Deny: deny})
+	srv := &http.Server{
+		Addr:    fmt.Sprintf("0.0.0.0:%d", c.cfg.HTTPPort),
+		Handler: handler,
+	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("web: %v", err)
+		}
+	}()
+	log.Printf("web: listening on :%d", c.cfg.HTTPPort)
+	return nil
+}
+
+func (c *Client) adminServer() *admin.Server {
+	c.adminMu.Lock()
+	defer c.adminMu.Unlock()
+	if c.adminSrv == nil {
+		c.adminSrv = admin.New(admin.Config{
+			Password:  c.cfg.AdminPass,
+			PackCount: func() int { return len(c.Packlist()) },
+			PackNames: func() []string {
+				pl := c.Packlist()
+				out := make([]string, len(pl))
+				for i, p := range pl {
+					out[i] = p.Name
+				}
+				return out
+			},
+		})
+	}
+	return c.adminSrv
+}
+
+// AdminRegistry exposes the bot's admin command registry for the TUI and other
+// non-network frontends.
+func (c *Client) AdminRegistry() *admin.Registry {
+	return c.adminServer().Registry()
+}
+
+func (c *Client) startAdmin() error {
+	if !c.cfg.TelnetEnable {
+		return nil
+	}
+	s := c.adminServer()
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", c.cfg.TelnetPort))
+	if err != nil {
+		return err
+	}
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			log.Printf("admin: %v", err)
+		}
+	}()
+	log.Printf("admin: listening on :%d", c.cfg.TelnetPort)
+	return nil
+}
+
+// --- sxdcc.Host implementation ---
+
+func (c *Client) Packlist() []packs.Pack {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]packs.Pack, len(c.packlist))
+	copy(out, c.packlist)
+	return out
+}
+
+func (c *Client) PackByNumber(n int) (packs.Pack, bool) {
+	pl := c.Packlist()
+	if n < 1 || n > len(pl) {
+		return packs.Pack{}, false
+	}
+	return pl[n-1], true
+}
+
+func (c *Client) OpenFile(path string) (io.ReadCloser, error) {
+	return os.Open(path)
+}
+
+func (c *Client) Logf(format string, args ...any) {
+	log.Printf(format, args...)
+}

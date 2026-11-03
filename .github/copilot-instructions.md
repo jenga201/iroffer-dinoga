@@ -1,23 +1,24 @@
-# Copilot Instructions for portal
+# Copilot Instructions for Dinoga
 
 ## One-line summary
 
-This project is an XDCC file server running in a Docker container, using Iroffer Dinoex as the server software. It
-allows users to share files over IRC channels.
+Dinoga is a Go rewrite of iroffer-dinoex — an XDCC file server over IRC. It keeps
+the DCC/XDCC wire protocol and the same config surface, with a clean concurrency
+model replacing the single-threaded C event loop.
 
 ## Primary technologies
 
-- Docker
-- Iroffer Dinoex
-- bash
+- Go (stdlib only so far)
+- Docker (multi-stage, static binary)
 
-## Permissions & safety (important)
+## Critical files
 
-- Do NOT suggest code that exfiltrates secrets, credentials, or private keys. Never hardcode secrets into code or
-  configuration.
+- `cmd/dinoga/main.go`, `internal/{config,irc,xdcc,dcc,packs}`
+- `compat/original/` — original C build kept for A/B comparison
+- `docs/REWRITE-PLAN.md` — feature map and migration phases
 
-## AI Response Optimization
+## Rules
 
-- Provide concise, context-aware code snippets
-- When asked for fixes, explain the root cause briefly before code
-- When generating new files, follow the existing structure and naming conventions
+- Follow golang-standards/project-layout (`cmd/` + `internal/`).
+- Keep the DCC/XDCC wire protocol **exactly** compatible with iroffer-dinoex.
+- Never commit secrets; `.env.example` is safe to read; never read `.env`.

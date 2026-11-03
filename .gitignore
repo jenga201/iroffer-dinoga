@@ -3,3 +3,13 @@
 .env.*
 !.env.example
 .idea*
+
+# Go build outputs
+/bin/
+/dist/
+dinoga
+*.test
+*.out
+
+# Local test config (contains secrets — never commit)
+/localtest/
