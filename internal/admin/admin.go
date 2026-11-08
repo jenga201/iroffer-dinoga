@@ -1,6 +1,6 @@
-// Package admin implements the telnet administration interface: a
-// password-protected command loop with a registry of commands that the
-// integrator can extend.
+// Package admin implements the bot's administration command console: a
+// password-checked command registry with an interactive loop shared by the
+// SDCC chat and TUI frontends. (The telnet frontend was removed.)
 package admin
 
 import (
@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,7 +19,7 @@ import (
 // ErrQuit is returned by a command to request that the connection be closed.
 var ErrQuit = errors.New("admin: quit")
 
-// Config configures the telnet administration server.
+// Config configures the administration server.
 type Config struct {
 	// Password is the plaintext password to accept. Ignored when PasswordHash
 	// is set.
@@ -102,7 +101,7 @@ func nameKey(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-// Server is the telnet administration server.
+// Server is the administration server.
 type Server struct {
 	cfg Config
 	reg *Registry
@@ -154,18 +153,6 @@ func (s *Server) Registry() *Registry {
 	return s.reg
 }
 
-// Serve accepts connections on ln until it fails. Each connection is handled
-// in its own goroutine: prompt for the password, then run the command loop.
-func (s *Server) Serve(ln net.Listener) error {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return err
-		}
-		go s.handle(conn)
-	}
-}
-
 // checkPassword verifies a candidate against the configured credential.
 func (s *Server) checkPassword(candidate string) bool {
 	if s.cfg.PasswordHash != "" {
@@ -180,29 +167,6 @@ func (s *Server) checkPassword(candidate string) bool {
 	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.cfg.Password)) == 1
 }
 
-func (s *Server) handle(conn net.Conn) {
-	defer conn.Close()
-
-	if s.cfg.Motd != "" {
-		s.writeMotd(conn)
-	}
-
-	br := bufio.NewReader(conn)
-	fmt.Fprint(conn, "Password: \r\n")
-
-	pwLine, err := br.ReadString('\n')
-	if err != nil {
-		return
-	}
-	if !s.CheckPassword(trimLine(pwLine)) {
-		fmt.Fprint(conn, "Access denied\r\n")
-		return
-	}
-	fmt.Fprint(conn, "Welcome\r\n")
-
-	s.loop(br, conn)
-}
-
 func (s *Server) writeMotd(w io.Writer) {
 	for _, line := range strings.Split(s.cfg.Motd, "\n") {
 		fmt.Fprintf(w, "%s\r\n", strings.TrimRight(line, "\r"))
@@ -210,8 +174,8 @@ func (s *Server) writeMotd(w io.Writer) {
 }
 
 // loop runs the interactive command loop — prompt, read, dispatch, repeat —
-// until a command returns ErrQuit or the stream closes. It is shared by the
-// telnet frontend (handle) and the SDCC chat frontend (ServeChat).
+// until a command returns ErrQuit or the stream closes. It is used by the
+// SDCC chat frontend (ServeChat).
 func (s *Server) loop(r *bufio.Reader, w io.Writer) {
 	for {
 		fmt.Fprint(w, "> \r\n")
@@ -242,8 +206,8 @@ func (s *Server) loop(r *bufio.Reader, w io.Writer) {
 }
 
 // CheckPassword verifies a candidate against the configured credential in
-// constant time. It is exported so the SXDCC server can gate SDCC chat on the
-// same admin credential used by the telnet frontend.
+// constant time. It is exported so the SDCC server can gate SDCC chat on the
+// admin credential.
 func (s *Server) CheckPassword(candidate string) bool {
 	return s.checkPassword(candidate)
 }

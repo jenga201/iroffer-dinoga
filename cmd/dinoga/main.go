@@ -1,6 +1,6 @@
 // Command dinoga is the Go rewrite of the iroffer-dinoex XDCC bot. It reads an
 // optional iroffer.config (or IROFFER_* environment variables), serves packs over
-// XDCC/DCC and SXDCC, and exposes HTTP, telnet, and interactive (TUI) admin
+// XDCC/DCC and SXDCC, and exposes HTTP plus an interactive (TUI) admin console
 // frontends.
 package main
 
@@ -87,7 +87,7 @@ func main() {
 }
 
 // runTUI drives the bot's admin command registry from stdin, without a password.
-// It mirrors the telnet/DCC-chat admin command experience (status/list/quit/help).
+// It mirrors the chat admin command experience (status/list/quit/help).
 func runTUI(reg *admin.Registry) {
 	sc := bufio.NewScanner(os.Stdin)
 	prompt := func() { fmt.Fprint(os.Stdout, "> ") }
@@ -165,9 +165,8 @@ passive_dcc yes            # reverse DCC (bot connects out to the downloader)
 # SEND and the client opens a second TLS connection (DATA <datatoken>) on that
 # port. No separate data-port range or NAT traversal is required.
 
-# --- admin / web / telnet ---
+# --- admin / web ---
 # adminpass <secret>       plaintext admin password
-# telnet_port 2323         enable the telnet admin interface
 # http_port 8080           enable the HTTP pack interface
 # http_allow 127.0.0.1     optional CIDR allow-list
 

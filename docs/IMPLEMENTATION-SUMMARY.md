@@ -18,7 +18,7 @@ New/rewritten packages and wiring in the Go rewrite (stdlib-only, `go 1.23`):
 | `internal/sxdcc` | SXDCC bot server: Ed25519 self-signed IP-SAN identity (persist + load), SPKI pin, single-use tokens, TLS 1.3 control + data channels, **active and passive** data (`ACCEPT`), optional slot gating | done + tests (active + passive TLS roundtrips) |
 | `internal/irc` | **Multi-network** client (one `netConn` goroutine per `network {}` block), auto-reconnect, queue workers, SXDCC trigger, state save, announce, DCC chat, uploads (ACK receive), DCC active/passive/resume handlers | done |
 | `cmd/dinoga` | `Load(--config)`, optional `logfile`, and flags `--print-config` (template output), `--hash-password <pass>` (admin hash), `--tui` (interactive admin, no password) | done |
-| `internal/web` / `internal/admin` | HTTP pack listing/JSON/MD5/SFV + telnet admin — **wired into the bot** (live-verified) | done + tests |
+| `internal/web` / `internal/admin` | HTTP pack listing/JSON/MD5/SFV + chat/TUI admin console — **wired into the bot** (live-verified) | done + tests |
 
 ## Key result — 1M-file scan (stress)
 
@@ -54,10 +54,10 @@ Both bots produced identical wire behaviour and identical file content (same
 MD5), i.e. the Go rewrite interoperates with the standard PircBotX client
 exactly as the original bot does.
 
-## Web + telnet (live-verified on remote)
+## Web + admin chat (live-verified on remote)
 
 - `GET /list.json` → `[{"number":1,"name":"testpack.bin","size":28}]`.
-- telnet (port 2323): `Password:` → `Welcome` → `status` → `packs: 1` → `quit` → `bye`.
+- admin console (`--tui` / SDCC chat): `status` → `packs: 1` → `quit` → `bye`.
 
 ## SXDCC status
 
@@ -103,7 +103,7 @@ Run (same `IROFFER_*` env as the original container):
 
     The binary reads only `iroffer.config` — `usenatip`, `tcprangestart/limit`,
     `passive_dcc`, `sxdcc_*`, `headline`, `periodicmsg*`, `uploaddir`, `statefile`,
-    `logfile`, `http_port`, `telnet_port` are all file directives (see
+    `logfile`, `http_port` are file directives (see
     `--print-config`). Env→config translation is deferred to the container, not the
     binary.
 

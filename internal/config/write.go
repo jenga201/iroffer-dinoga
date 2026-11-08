@@ -78,7 +78,6 @@ func Write(w io.Writer, c Config) error {
 		fmt.Fprintf(&b, "sxdcc_key %s\n", c.KeyFile)
 	}
 
-	fmt.Fprintf(&b, "telnet_port %d\n", c.TelnetPort)
 	if c.AdminPass != "" {
 		fmt.Fprintf(&b, "adminpass %s\n", c.AdminPass)
 	}
@@ -187,8 +186,7 @@ const configHeader = `# dinoga config (generated)
 # sxdcc_key <path>        TLS private key
 
 # --- admin / web ---
-# adminpass <secret>      admin password (SDCC/telnet)
-# telnet_port <port>      0 = disabled
+# adminpass <secret>      admin password (SDCC chat)
 # http_port <port>        separate HTTP interface (0 = disabled); the packlist
 #                         is also served on the control port as /packlist.txt
 

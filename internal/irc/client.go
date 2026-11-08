@@ -137,10 +137,6 @@ func (c *Client) Run(ctx context.Context) error {
 	if err := c.startWeb(); err != nil {
 		log.Printf("web: %v", err)
 	}
-	if err := c.startAdmin(); err != nil {
-		log.Printf("admin: %v", err)
-	}
-
 	c.loadState()
 	if err := c.scan(); err != nil {
 		log.Printf("initial scan of %s: %v", c.cfg.FileDir, err)
@@ -1169,24 +1165,6 @@ func (c *Client) adminServer() *admin.Server {
 // non-network frontends.
 func (c *Client) AdminRegistry() *admin.Registry {
 	return c.adminServer().Registry()
-}
-
-func (c *Client) startAdmin() error {
-	if !c.cfg.TelnetEnable {
-		return nil
-	}
-	s := c.adminServer()
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", c.cfg.TelnetPort))
-	if err != nil {
-		return err
-	}
-	go func() {
-		if err := s.Serve(ln); err != nil {
-			log.Printf("admin: %v", err)
-		}
-	}()
-	log.Printf("admin: listening on :%d", c.cfg.TelnetPort)
-	return nil
 }
 
 // --- sxdcc.Host implementation ---

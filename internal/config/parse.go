@@ -142,13 +142,8 @@ func applyFile(c *Config, path string) error {
 			c.HTTPAllow = fields(value)
 		case "http_deny":
 			c.HTTPDeny = fields(value)
-		case "telnet_port":
-			c.TelnetPort = atoiOr(value, c.TelnetPort)
-			c.TelnetEnable = c.TelnetPort > 0
 		case "adminpass":
 			c.AdminPass = value
-		case "adminhost":
-			c.AdminHost = fields(value)
 		case "sxdcc_enable":
 			c.SXDCCEnable = yesNo(value, c.SXDCCEnable)
 		case "sxdcc_cert":

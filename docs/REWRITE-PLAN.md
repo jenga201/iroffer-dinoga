@@ -44,7 +44,7 @@ directives, DROP = remove, DEFER = decide later.
 | 9 | Config system | parse `iroffer.config`, env override | `dinoex_config.c`; ~220 directives | KEEP*, PRUNE unneeded directives |
 | 10 | State persistence | resume points, packlist, queues across restarts | `dinoex_statefile.c`, `iroffer_statefile.c`; `statefile`, `old_statefile` | KEEP |
 | 11 | HTTP web interface | list/search/JSON/MD5/SFV/info pages, access control | `dinoex_http.c`; `http_*`, `tcp params` | KEEP* (native Go templates) |
-| 12 | Telnet admin | remote administration | `dinoex_telnet.c`, `iroffer_admin.c`; `telnet_*`, `adminpass`, `adminhost` | KEEP* (redesign commands) |
+| 12 | Admin console | remote administration over chat/TUI | `iroffer_admin.c`; `adminpass` | KEEP* (redesign commands; **telnet DROPped**) |
 | 13 | User / anti-abuse | hostmask allow/deny, per-user limits, flood protection, ignores | `dinoex_user.c`, `dinoex_badip.c`; `downloadhost`, `xdcc_allow/deny`, `need_level/voice`, `restrict*`, `flood_protection_rate`, `autoignore_*` | KEEP |
 | 14 | Announcements | announce packs/headlines/periodic messages | `announce_*`, `headline`, `periodicmsg`, `autoaddann` | KEEP |
 | 15 | Logging / stats | log files, rotation, statistics | `logfile*`, `logrotate`, `logstats`, `logmessages/notices` | KEEP* (native) |
@@ -82,7 +82,7 @@ iroffer-dinoga/
 │   ├── transfer/               # DCC transfer engine (slots, resume)
 │   ├── queue/                  # slots/queues/idle/bw limits
 │   ├── web/                    # HTTP interface (Go templates)
-│   ├── admin/                  # telnet + DCC chat admin
+│   ├── admin/                  # admin command console (chat/TUI)
 │   ├── geoip/                  # MaxMind mmdb (optional)
 │   └── fish/                   # FISH/Blowfish (optional)
 ├── htdocs/                     # Go templates replacing the *.rb files
@@ -118,7 +118,7 @@ iroffer-dinoga/
 3. IRC connection + channel join (parity with multi-network core).
 4. Packlist + hashing + XDCC LIST/SEND (core server path).
 5. DCC transfer (active, then passive), resume, queues/slots.
-6. Admin (DCC chat + telnet), web interface, logging.
+6. Admin (DCC chat + SDCC chat), web interface, logging.
 7. Remaining parity (FISH, GeoIP, uploads, upload/download limits, announce).
 8. SXDCC (secure XDCC/DCC over TLS 1.3): server cert + SPKI pin, IRC rendezvous,
    TLS control channel, per-pack TLS data channel — per `IRC/dcc-protocol/SXDCC.md`.
@@ -205,7 +205,7 @@ iroffer-dinoga/
 ### 9. Config system — KEEP* / PRUNE (partial)
 
 - [x] Real `iroffer.config` file parser (the bot's only config source; no env)
-- [x] Multi-`network { … }` blocks + formerly env-only directives (`usenatip`, `tcprangestart/limit`, `passive_dcc`, `autoadd_*`, `sxdcc_*`, `headline`, `periodicmsg*`, `uploaddir`, http/telnet)
+- [x] Multi-`network { … }` blocks + formerly env-only directives (`usenatip`, `tcprangestart/limit`, `passive_dcc`, `autoadd_*`, `sxdcc_*`, `headline`, `periodicmsg*`, `uploaddir`, http)
 - [ ] Env→config translation — deferred to the Docker container entrypoint
 - [ ] Prune unneeded directives
 
@@ -221,11 +221,11 @@ iroffer-dinoga/
 - [x] access control (`http_allow` / `http_deny`)
 - [x] wired into the bot (`http_port`)
 
-### 12. Telnet admin — KEEP* (redesign)
+### 12. Admin console — KEEP* (redesign; telnet DROPped)
 
-- [x] Telnet listener + auth (`adminpass` / `adminhost` via `telnet_port`)
-- [x] Admin command set (redesigned: `status`/`list`/`quit`/`help` + registry)
-- [x] wired into the bot (`telnet_port`)
+- [x] Admin command set (redesigned: `status`/`list`/`quit`/`help` + registry, plus `addpack`/`removepack`/`chdesc`)
+- [x] Frontends: SDCC chat, classic DCC chat (basic), and `--tui` (no password)
+- [x] Telnet listener removed; `telnet_port`/`adminhost` DROPped; `adminpass` remains for SDCC chat auth
 
 ### 13. User / anti-abuse — KEEP
 
@@ -298,7 +298,7 @@ Spec: `IRC/dcc-protocol/SXDCC.md`.
 
 ### 25. Password hash flag — ADD
 
-- [x] `--hash-password <pass>` prints the SHA-256 hash (matches telnet admin hashing)
+- [x] `--hash-password <pass>` prints the SHA-256 hash (matches admin password hashing)
 
 ### 26. TUI mode — ADD
 

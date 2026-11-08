@@ -66,10 +66,7 @@ type Config struct {
 	HTTPAllow  []string
 	HTTPDeny   []string
 
-	TelnetEnable bool
-	TelnetPort   int
-	AdminPass    string
-	AdminHost    []string
+	AdminPass string
 
 	SXDCCEnable bool
 	CertFile    string

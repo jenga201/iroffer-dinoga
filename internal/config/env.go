@@ -140,18 +140,9 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 		apply("http_deny", v)
 	}
 
-	if v, ok := get(env, "telnet_port"); ok && v != "" {
-		c.TelnetPort = atoiOr(v, c.TelnetPort)
-		c.TelnetEnable = c.TelnetPort > 0
-		apply("telnet_port", v)
-	}
 	if v, ok := get(env, "adminpass"); ok && v != "" {
 		c.AdminPass = v
 		apply("adminpass", "<redacted>")
-	}
-	if v, ok := get(env, "adminhost"); ok {
-		c.AdminHost = splitMulti(v)
-		apply("adminhost", v)
 	}
 
 	if v, ok := get(env, "sxdcc_enable"); ok && v != "" {
