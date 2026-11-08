@@ -104,6 +104,21 @@ func Write(w io.Writer, c Config) error {
 	if c.LogFile != "" {
 		fmt.Fprintf(&b, "logfile %s\n", c.LogFile)
 	}
+	if c.LogRotate != "" && c.LogRotate != "never" {
+		fmt.Fprintf(&b, "logrotate %s\n", c.LogRotate)
+	}
+	if c.LogFileMessages != "" {
+		fmt.Fprintf(&b, "logfile_messages %s\n", c.LogFileMessages)
+	}
+	if c.LogFileNotices != "" {
+		fmt.Fprintf(&b, "logfile_notices %s\n", c.LogFileNotices)
+	}
+	b.WriteString(boolLine("logmessages", c.LogMessages))
+	b.WriteString(boolLine("lognotices", c.LogNotices))
+	b.WriteString(boolLine("logstats", c.LogStats))
+	if c.ExpireLogFiles > 0 {
+		fmt.Fprintf(&b, "expire_logfiles %d\n", c.ExpireLogFiles)
+	}
 
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -185,5 +200,12 @@ const configHeader = `# dinoga config (generated)
 # periodicmsg_time <sec>  seconds between periodic messages
 # statefile <path>
 # logfile <path>
+# logrotate <v>           rotation: never/daily/weekly/monthly/<N> hours
+# expire_logfiles <days>  delete rotated logs older than N days (0 = keep)
+# logfile_messages <path> separate PRIVMSG transcript (requires logmessages)
+# logfile_notices <path>  separate NOTICE transcript (requires lognotices)
+# logmessages yes         log incoming private messages (fall back to logfile)
+# lognotices yes          log incoming notices (fall back to logfile)
+# logstats yes            periodic status line into the logfile
 
 `

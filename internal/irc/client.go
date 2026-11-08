@@ -25,6 +25,7 @@ import (
 	"github.com/jenga201/dinoga/internal/admin"
 	"github.com/jenga201/dinoga/internal/config"
 	"github.com/jenga201/dinoga/internal/dcc"
+	"github.com/jenga201/dinoga/internal/logging"
 	"github.com/jenga201/dinoga/internal/packs"
 	"github.com/jenga201/dinoga/internal/queue"
 	"github.com/jenga201/dinoga/internal/sdcc"
@@ -65,7 +66,8 @@ type queueItem struct {
 
 // Client holds the shared bot state across all networks.
 type Client struct {
-	cfg config.Config
+	cfg    config.Config
+	logger *logging.Logger
 
 	mu       sync.RWMutex // guards packlist
 	packlist []packs.Pack
@@ -98,7 +100,7 @@ type Client struct {
 }
 
 // New returns a Client configured by cfg.
-func New(cfg config.Config) *Client {
+func New(cfg config.Config, logger *logging.Logger) *Client {
 	m := queue.New(queue.Config{
 		Slots:                  cfg.SlotsMax,
 		QueueSize:              cfg.QueueSize,
@@ -109,6 +111,7 @@ func New(cfg config.Config) *Client {
 	})
 	c := &Client{
 		cfg:       cfg,
+		logger:    logger,
 		transfers: map[int]*transfer{},
 		pending:   map[string]*queueItem{},
 		q:         m,
@@ -147,8 +150,45 @@ func (c *Client) Run(ctx context.Context) error {
 		go nc.run(ctx)
 	}
 
+	if c.cfg.LogStats && c.cfg.LogFile != "" {
+		go c.statsLoop(ctx)
+	}
+
 	<-ctx.Done()
 	return nil
+}
+
+// statsInterval matches the upstream status_time_dcc_chat default, which is
+// how often iroffer-dinoex writes its logstats line.
+const statsInterval = 120 * time.Second
+
+// statsLoop periodically writes a status line to the main log while logstats
+// is enabled. It is only started when a logfile is configured, since that is
+// where the line is written.
+func (c *Client) statsLoop(ctx context.Context) {
+	t := time.NewTicker(statsInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c.logStats()
+		}
+	}
+}
+
+func (c *Client) logStats() {
+	if c.logger == nil {
+		return
+	}
+	s := c.q.Snapshot()
+	used := c.cfg.SlotsMax - s.FreeSlots
+	if used < 0 {
+		used = 0
+	}
+	c.logger.Mainf("Stat: %d/%d slots, %d/%d queued, %d idle, %d packs",
+		used, c.cfg.SlotsMax, s.QueueLen, c.cfg.QueueSize, s.IdleLen, len(c.Packlist()))
 }
 
 // netConn is a single IRC server connection. All XDCC/SXDCC/CTCP handling for
@@ -299,7 +339,14 @@ func (nc *netConn) handle(line string) {
 		nc.writef("CAP END")
 		log.Printf("network %s: SASL failed (%s)", nc.net.Server, cmd)
 	case "PRIVMSG":
+		if nc.c.logger != nil {
+			nc.c.logger.Message(sender + " " + args)
+		}
 		nc.handlePrivmsg(sender, args)
+	case "NOTICE":
+		if nc.c.logger != nil {
+			nc.c.logger.Notice(sender + " " + args)
+		}
 	}
 }
 

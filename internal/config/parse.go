@@ -121,6 +121,20 @@ func applyFile(c *Config, path string) error {
 			c.StateFile = value
 		case "logfile":
 			c.LogFile = value
+		case "logrotate":
+			c.LogRotate = value
+		case "expire_logfiles":
+			c.ExpireLogFiles = atoiOr(value, c.ExpireLogFiles)
+		case "logmessages":
+			c.LogMessages = yesNo(value, c.LogMessages)
+		case "lognotices":
+			c.LogNotices = yesNo(value, c.LogNotices)
+		case "logfile_messages":
+			c.LogFileMessages = value
+		case "logfile_notices":
+			c.LogFileNotices = value
+		case "logstats":
+			c.LogStats = yesNo(value, c.LogStats)
 		case "http_port":
 			c.HTTPPort = atoiOr(value, c.HTTPPort)
 			c.HTTPEnable = c.HTTPPort > 0

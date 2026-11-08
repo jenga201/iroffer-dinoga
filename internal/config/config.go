@@ -84,6 +84,15 @@ type Config struct {
 	// UploadMaxSize caps incoming DCC SEND uploads (bytes; 0 = unlimited).
 	UploadMaxSize int64
 
+	// Logging / stats (see docs/REWRITE-PLAN.md #15).
+	LogRotate       string // logrotate: never/daily/weekly/monthly/<N> hours
+	ExpireLogFiles  int    // expire_logfiles: days to retain rotated logs (0 = keep)
+	LogMessages     bool   // log incoming PRIVMSG lines
+	LogNotices      bool   // log incoming NOTICE lines
+	LogFileMessages string // logfile_messages: separate transcript file
+	LogFileNotices  string // logfile_notices: separate transcript file
+	LogStats        bool   // periodic status line to the log
+
 	// Anti-abuse / access control (hostmasks nick!user@host).
 	XDCCAllow []string
 	XDCCDeny  []string
@@ -110,6 +119,7 @@ func base() Config {
 		QueueSize:      100,
 		IdleQueueSize:  50,
 		ReconnectDelay: 30,
+		LogStats:       true,
 	}
 }
 

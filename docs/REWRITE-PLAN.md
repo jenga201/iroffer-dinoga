@@ -243,8 +243,8 @@ iroffer-dinoga/
 
 - [x] Structured stdout logging
 - [x] log files (`logfile`) via `cmd/dinoga/main.go`
-- [ ] rotate + levels (`logrotate`, `logmessages/notices`)
-- [ ] `logstats`
+- [x] rotate + levels + expiry (`logrotate`, `logmessages`/`lognotices`, `expire_logfiles`)
+- [x] `logstats` (periodic "Stat:" line every `status_time_dcc_chat` default of 120s)
 
 ### 16. GeoIP / MaxMind — DEFER
 

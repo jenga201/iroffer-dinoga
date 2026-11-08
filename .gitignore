@@ -7,7 +7,7 @@
 # Go build outputs
 /bin/
 /dist/
-dinoga
+/dinoga
 *.test
 *.out
 

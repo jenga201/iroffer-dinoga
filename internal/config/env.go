@@ -97,6 +97,34 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 		c.LogFile = strings.TrimSpace(v)
 		apply("logfile", v)
 	}
+	if v, ok := get(env, "logrotate"); ok && v != "" {
+		c.LogRotate = strings.TrimSpace(v)
+		apply("logrotate", v)
+	}
+	if v, ok := get(env, "expire_logfiles"); ok && v != "" {
+		c.ExpireLogFiles = atoiOr(v, c.ExpireLogFiles)
+		apply("expire_logfiles", v)
+	}
+	if v, ok := get(env, "logmessages"); ok && v != "" {
+		c.LogMessages = yesNo(v, c.LogMessages)
+		apply("logmessages", v)
+	}
+	if v, ok := get(env, "lognotices"); ok && v != "" {
+		c.LogNotices = yesNo(v, c.LogNotices)
+		apply("lognotices", v)
+	}
+	if v, ok := get(env, "logfile_messages"); ok && v != "" {
+		c.LogFileMessages = strings.TrimSpace(v)
+		apply("logfile_messages", v)
+	}
+	if v, ok := get(env, "logfile_notices"); ok && v != "" {
+		c.LogFileNotices = strings.TrimSpace(v)
+		apply("logfile_notices", v)
+	}
+	if v, ok := get(env, "logstats"); ok && v != "" {
+		c.LogStats = yesNo(v, c.LogStats)
+		apply("logstats", v)
+	}
 
 	if v, ok := get(env, "http_port"); ok && v != "" {
 		c.HTTPPort = atoiOr(v, c.HTTPPort)

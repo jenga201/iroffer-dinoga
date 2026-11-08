@@ -302,3 +302,61 @@ uploadmaxsize 1048576
 		t.Fatalf("upload = %q maxsize %d", c.UploadDir, c.UploadMaxSize)
 	}
 }
+
+func TestLoggingDefaults(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.LogStats {
+		t.Fatalf("logstats should default to true")
+	}
+	if c.LogRotate != "" || c.ExpireLogFiles != 0 || c.LogMessages || c.LogNotices {
+		t.Fatalf("logging defaults = %+v", c)
+	}
+}
+
+func TestLoadLoggingDirectives(t *testing.T) {
+	path := writeConfig(t, `
+logfile /var/log/dinoga.log
+logrotate daily
+expire_logfiles 14
+logmessages yes
+lognotices yes
+logfile_messages /var/log/dinoga-msg.log
+logfile_notices /var/log/dinoga-ntc.log
+logstats no
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.LogFile != "/var/log/dinoga.log" || c.LogRotate != "daily" || c.ExpireLogFiles != 14 {
+		t.Fatalf("log config = %+v", c)
+	}
+	if !c.LogMessages || !c.LogNotices {
+		t.Fatalf("message/notice flags = %v/%v", c.LogMessages, c.LogNotices)
+	}
+	if c.LogFileMessages != "/var/log/dinoga-msg.log" || c.LogFileNotices != "/var/log/dinoga-ntc.log" {
+		t.Fatalf("msg/ntc files = %q/%q", c.LogFileMessages, c.LogFileNotices)
+	}
+	if c.LogStats {
+		t.Fatalf("logstats should be disabled by file directive")
+	}
+}
+
+func TestEnvLoggingOverrides(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ApplyEnvOverrides(&c, []string{
+		"IROFFER_LOGROTATE=weekly",
+		"IROFFER_LOGSTATS=no",
+		"IROFFER_LOGMESSAGES=yes",
+		"IROFFER_EXPIRE_LOGFILES=7",
+	})
+	if c.LogRotate != "weekly" || c.LogStats || !c.LogMessages || c.ExpireLogFiles != 7 {
+		t.Fatalf("logging env overrides = %+v", c)
+	}
+}
