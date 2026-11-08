@@ -23,6 +23,7 @@ func (s *stubClient) SendPack(target string, p packs.Pack) error {
 }
 func (s *stubClient) Packlist() []packs.Pack          { return s.packlist }
 func (s *stubClient) CancelQueued(target string) bool { return s.cancelled }
+func (s *stubClient) PacklistURL() string             { return "" }
 
 func threePacks() []packs.Pack {
 	return []packs.Pack{

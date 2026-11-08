@@ -20,6 +20,9 @@ type Client interface {
 	// CancelQueued removes the caller's oldest queued (not yet started)
 	// transfer, returning true if one was removed.
 	CancelQueued(target string) bool
+	// PacklistURL returns the public HTTP URL of the packlist ("" when not
+	// available), advertised in the "xdcc list" reply.
+	PacklistURL() string
 }
 
 // Handle routes one private message to the bot (e.g. "xdcc list", "xdcc send #1").
@@ -43,6 +46,9 @@ func Handle(c Client, target, message string) {
 func sendList(c Client, target string) {
 	pl := c.Packlist()
 	c.Notice(target, fmt.Sprintf("** %d pack(s) **  (use: xdcc send #<n>)", len(pl)))
+	if url := c.PacklistURL(); url != "" {
+		c.Notice(target, fmt.Sprintf("** Packlist: %s **", url))
+	}
 	for _, p := range pl {
 		c.Notice(target, fmt.Sprintf("#%d %6d [%s]", p.Number, p.Size, p.Name))
 	}

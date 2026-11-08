@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jenga201/dinoga/internal/packs"
 )
@@ -46,28 +45,6 @@ func TestPinEqual(t *testing.T) {
 	}
 	if PinEqual("short", "longer-value") {
 		t.Fatal("PinEqual should be false for different lengths")
-	}
-}
-
-func TestTokenStore(t *testing.T) {
-	s := newTokenStore(50 * time.Millisecond)
-	tok, err := s.mint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.add(tok)
-	if !s.consume(tok) {
-		t.Fatal("first consume should succeed")
-	}
-	if s.consume(tok) {
-		t.Fatal("replay should fail")
-	}
-
-	tok2, _ := s.mint()
-	s.add(tok2)
-	time.Sleep(60 * time.Millisecond)
-	if s.consume(tok2) {
-		t.Fatal("expired token should fail")
 	}
 }
 
@@ -138,7 +115,8 @@ func TestControlAndDataRoundtrip(t *testing.T) {
 	go s.Serve(rawLn)
 
 	port := rawLn.Addr().(*net.TCPAddr).Port
-	line, token, err := s.Rendezvous(port)
+	s.SetControlPort(port)
+	line, token, err := s.Rendezvous()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +141,7 @@ func TestControlAndDataRoundtrip(t *testing.T) {
 	expectLine := func(write, wantPrefix string) string {
 		t.Helper()
 		if write != "" {
-			if _, err := fmt.Fprintf(conn, write+"\r\n"); err != nil {
+			if _, err := fmt.Fprintf(conn, "%s\r\n", write); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -227,6 +205,73 @@ func TestControlAndDataRoundtrip(t *testing.T) {
 	expectLine("", "DONE #1 ")
 }
 
+func TestTriggerAutoExecute(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("auto-executed send")
+	file := filepath.Join(dir, "auto.bin")
+	if err := os.WriteFile(file, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := &stubHost{packs: []packs.Pack{{Number: 1, Name: "auto.bin", Path: file, Size: int64(len(content))}}}
+	s, err := New(host, Config{
+		CertFile:  filepath.Join(dir, "cert.pem"),
+		KeyFile:   filepath.Join(dir, "key.pem"),
+		IP:        "127.0.0.1",
+		PortStart: 45500,
+		PortLimit: 45600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rawLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawLn.Close()
+	go s.Serve(rawLn)
+
+	_, token, err := s.Rendezvous()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The client's IRC trigger was "sxdcc send 1"; the bot remembers it and must
+	// auto-execute SEND 1 right after AUTH (SXDCC.md §9.4), without the client
+	// sending the command again.
+	s.SetPendingCommand(token, "SEND 1")
+
+	dialCfg := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}
+	conn, err := tls.Dial("tcp", rawLn.Addr().String(), dialCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	br := bufio.NewReader(conn)
+	readLine := func() string {
+		t.Helper()
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimRight(line, "\r\n")
+	}
+
+	// AUTH -> OK (auto-execution of SEND 1 follows).
+	if _, err := fmt.Fprintf(conn, "AUTH %s\r\n", token); err != nil {
+		t.Fatal(err)
+	}
+	if line := readLine(); !strings.HasPrefix(line, "OK ") {
+		t.Fatalf("got %q, want OK", line)
+	}
+
+	// The bot auto-sends the data offer without the client sending SEND.
+	sendLine := readLine()
+	if !strings.HasPrefix(sendLine, "SEND #1 ") {
+		t.Fatalf("got %q, want auto-executed SEND #1", sendLine)
+	}
+}
+
 func TestPassiveDataRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("hello passive sxdcc")
@@ -265,7 +310,7 @@ func TestPassiveDataRoundtrip(t *testing.T) {
 	expectLine := func(write, wantPrefix string) string {
 		t.Helper()
 		if write != "" {
-			if _, err := fmt.Fprintf(conn, write+"\r\n"); err != nil {
+			if _, err := fmt.Fprintf(conn, "%s\r\n", write); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -281,8 +326,7 @@ func TestPassiveDataRoundtrip(t *testing.T) {
 	}
 
 	// Rendezvous + AUTH.
-	port := rawLn.Addr().(*net.TCPAddr).Port
-	line, token, err := s.Rendezvous(port)
+	line, token, err := s.Rendezvous()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -114,6 +114,21 @@ func TestJSON(t *testing.T) {
 	}
 }
 
+func TestPacklistTxt(t *testing.T) {
+	_, pl := testPacks(t)
+	h := web.New(pl, web.Config{})
+
+	rr := do(h, http.MethodGet, "/packlist.txt", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	got := strings.TrimSpace(rr.Body.String())
+	want := "#1 6 alpha.txt\n#2 6 beta.txt\n#3 12 gamma.md"
+	if got != want {
+		t.Errorf("packlist.txt =\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestMD5(t *testing.T) {
 	_, pl := testPacks(t)
 	h := web.New(pl, web.Config{})

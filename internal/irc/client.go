@@ -23,14 +23,15 @@ import (
 
 	"github.com/jenga201/dinoga/internal/acl"
 	"github.com/jenga201/dinoga/internal/admin"
-	"github.com/jenga201/dinoga/internal/bounce"
 	"github.com/jenga201/dinoga/internal/config"
 	"github.com/jenga201/dinoga/internal/dcc"
 	"github.com/jenga201/dinoga/internal/packs"
 	"github.com/jenga201/dinoga/internal/queue"
+	"github.com/jenga201/dinoga/internal/sdcc"
 	"github.com/jenga201/dinoga/internal/state"
 	"github.com/jenga201/dinoga/internal/sxdcc"
 	throttle "github.com/jenga201/dinoga/internal/transfer"
+	"github.com/jenga201/dinoga/internal/vpn"
 	"github.com/jenga201/dinoga/internal/web"
 	"github.com/jenga201/dinoga/internal/xdcc"
 )
@@ -81,8 +82,15 @@ type Client struct {
 	adminMu  sync.Mutex
 	adminSrv *admin.Server
 
-	sxdcc     *sxdcc.Server
-	sxdccPort int
+	sxdcc *sxdcc.Server
+	sdcc  *sdcc.Server
+
+	advMu   sync.Mutex
+	advIP   string // current public IP advertised (VPN or usenatip)
+	advPort int    // current public port advertised (forwarded or control)
+
+	webMu           sync.Mutex
+	webHandlerCache http.Handler
 
 	acl *acl.Matcher
 
@@ -322,6 +330,10 @@ func (nc *netConn) handlePrivmsg(sender, args string) {
 		nc.handleCTCP(from, message[1:len(message)-1])
 		return
 	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(message)), "sdcc") {
+		nc.handleSDCC(from, message)
+		return
+	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(message)), "sxdcc") {
 		nc.handleSXDCC(from, message)
 		return
@@ -505,9 +517,34 @@ func (nc *netConn) handleSXDCC(from, message string) {
 		nc.Notice(from, "** SXDCC is not enabled **")
 		return
 	}
-	line, _, err := s.Rendezvous(nc.c.sxdccPort)
+	line, token, err := s.Rendezvous()
 	if err != nil {
 		nc.Notice(from, "** SXDCC error: "+err.Error()+" **")
+		return
+	}
+	// Remember the trigger verb (e.g. "send 1") so the bot auto-executes it once
+	// the client authenticates, instead of making the client repeat it
+	// (SXDCC.md §9.4). A bare "sxdcc" carries no command to run.
+	if verb, args, ok := sxdcc.ParseTrigger(message); ok && verb != "sxdcc" {
+		verb = strings.ToUpper(verb)
+		if args != "" {
+			s.SetPendingCommand(token, verb+" "+args)
+		} else {
+			s.SetPendingCommand(token, verb)
+		}
+	}
+	nc.Notice(from, line)
+}
+
+func (nc *netConn) handleSDCC(from, message string) {
+	s := nc.c.sdcc
+	if s == nil {
+		nc.Notice(from, "** SDCC is not enabled **")
+		return
+	}
+	line, _, err := s.Rendezvous()
+	if err != nil {
+		nc.Notice(from, "** SDCC error: "+err.Error()+" **")
 		return
 	}
 	nc.Notice(from, line)
@@ -525,6 +562,10 @@ func (nc *netConn) Privmsg(target, msg string) {
 
 func (nc *netConn) Packlist() []packs.Pack {
 	return nc.c.Packlist()
+}
+
+func (nc *netConn) PacklistURL() string {
+	return nc.c.PacklistURL()
 }
 
 func (nc *netConn) SendPack(target string, p packs.Pack) error {
@@ -846,81 +887,214 @@ func (c *Client) startSXDCC() error {
 	certFile := c.cfg.CertFile
 	keyFile := c.cfg.KeyFile
 	if certFile == "" {
-		certFile = "/home/dinoga/certs/sxdcc-cert.pem"
+		certFile = "/config/certs/sxdcc-cert.pem"
 	}
 	if keyFile == "" {
-		keyFile = "/home/dinoga/certs/sxdcc-key.pem"
+		keyFile = "/config/certs/sxdcc-key.pem"
 	}
-	if c.cfg.DCCIP == "" {
-		return fmt.Errorf("sxdcc requires usenatip (public IP)")
+	advertiseIP := c.cfg.DCCIP
+	if advertiseIP == "" {
+		if vpn.IsEnabled() {
+			// Behind a VPN the public IP is only known at runtime; start with a
+			// placeholder and let the watcher replace it (and the cert).
+			advertiseIP = "0.0.0.0"
+			log.Printf("sxdcc: VPN enabled, advertising placeholder IP until the forwarded address is discovered")
+		} else {
+			return fmt.Errorf("sxdcc requires usenatip (public IP)")
+		}
 	}
 	sxdccCfg := sxdcc.Config{
 		CertFile:  certFile,
 		KeyFile:   keyFile,
-		IP:        c.cfg.DCCIP,
+		IP:        advertiseIP,
 		PortStart: c.cfg.PortStart,
 		PortLimit: c.cfg.PortLimit,
 		Passive:   c.cfg.PassiveDCC,
 		Slot:      c.q,
 	}
-	if c.cfg.SXDCCBounce != "" {
-		sxdccCfg.AdvertiseIP = c.cfg.SXDCCBounce
-		sxdccCfg.NewListener = c.sxdccBounceFactory()
-	}
 	s, err := sxdcc.New(c, sxdccCfg)
 	if err != nil {
 		return err
 	}
-	ln, port, err := s.Listen()
+	port := c.cfg.ControlPort
+	if port <= 0 {
+		port = c.cfg.PortStart
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		return err
 	}
 	c.sxdcc = s
-	c.sxdccPort = port
-	log.Printf("sxdcc: listening on port %d, pin %s", port, s.Pin())
-	go func() {
-		if err := s.Serve(ln); err != nil {
-			log.Printf("sxdcc: %v", err)
-		}
-	}()
+	s.SetControlPort(port)
+
+	ipInt, err := dcc.IPToInt(advertiseIP)
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	c.sdcc = sdcc.New(c.adminServer(), ipInt, s.Pin())
+	c.sdcc.SetAdvertise(ipInt, port, s.Pin())
+	c.setAdvertise(advertiseIP, port)
+
+	log.Printf("sxdcc: listening on control port %d, pin %s", port, s.Pin())
+	go c.serveSecureDCC(ln, s, c.sdcc, c.webHandler())
+
+	if vpn.IsEnabled() {
+		go c.watchVPN()
+	}
 	return nil
 }
 
-// sxdccBounceFactory returns a listener factory that registers each SXDCC
-// listener as a reverse-tunnel port on the configured bounce relay, so the bot
-// needs no public inbound ports. The advertised ports reuse the DCC tcprange.
-func (c *Client) sxdccBounceFactory() func() (net.Listener, int, error) {
-	next := c.cfg.PortStart
-	return func() (net.Listener, int, error) {
-		if next > c.cfg.PortLimit {
-			return nil, 0, fmt.Errorf("bounce: no public port left in %d-%d", c.cfg.PortStart, c.cfg.PortLimit)
-		}
-		port := next
-		next++
-		ln, err := bounce.New(c.cfg.SXDCCTunnel, c.cfg.SXDCCTunnelSecret, port)
+// serveSecureDCC owns the single shared listener: plain HTTP for the packlist,
+// TLS for SXDCC/SDCC. Each connection is demultiplexed by its first byte — a TLS
+// ClientHello begins with 0x16, an HTTP request begins with an ASCII method
+// letter — and handed to the matching handler. No port is "locked": the accept
+// loop serves unlimited concurrent connections, one goroutine each.
+func (c *Client) serveSecureDCC(ln net.Listener, s *sxdcc.Server, sdccSrv *sdcc.Server, webHandler http.Handler) {
+	for {
+		conn, err := ln.Accept()
 		if err != nil {
-			return nil, 0, err
+			log.Printf("sxdcc: %v", err)
+			return
 		}
-		return ln, port, nil
+		go c.handleSecureConn(conn, s, sdccSrv, webHandler)
 	}
+}
+
+func (c *Client) handleSecureConn(conn net.Conn, s *sxdcc.Server, sdccSrv *sdcc.Server, webHandler http.Handler) {
+	r := bufio.NewReader(conn)
+
+	// Distinguish plain HTTP from TLS without consuming the first byte.
+	first, err := r.Peek(1)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	if isHTTPMethodByte(first[0]) {
+		c.serveHTTP(conn, r, webHandler)
+		return
+	}
+
+	defer conn.Close()
+	tlsConn := tls.Server(bufferedConn{Conn: conn, r: r}, s.TLSConfig())
+	if err := tlsConn.Handshake(); err != nil {
+		return
+	}
+	tr := bufio.NewReader(tlsConn)
+	line, err := tr.ReadString('\n')
+	if err != nil {
+		return
+	}
+	if len(line) > 8192 {
+		return
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if f := strings.Fields(line); len(f) == 2 && strings.EqualFold(f[0], "ADMIN") {
+		sdccSrv.HandleConn(tlsConn, tr, line)
+		return
+	}
+	s.HandleConn(tlsConn, tr, line)
+}
+
+// serveHTTP serves the web handler over a single accepted plain-HTTP
+// connection (used when the shared port receives a browser/HTTP client).
+func (c *Client) serveHTTP(conn net.Conn, r *bufio.Reader, handler http.Handler) {
+	bconn := bufferedConn{Conn: conn, r: r}
+	srv := &http.Server{Handler: handler}
+	l := newOneConnListener(bconn)
+	// Release Serve (and thus return) only after the connection is finished, so
+	// the response body is flushed before this goroutine exits.
+	srv.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateClosed {
+			_ = l.Close()
+		}
+	}
+	_ = srv.Serve(l)
+}
+
+// webHandler lazily builds and caches the HTTP packlist handler.
+func (c *Client) webHandler() http.Handler {
+	c.webMu.Lock()
+	defer c.webMu.Unlock()
+	if c.webHandlerCache != nil {
+		return c.webHandlerCache
+	}
+	allow, err := web.ParseCIDRs(c.cfg.HTTPAllow)
+	if err != nil {
+		log.Printf("web: http_allow: %v", err)
+		allow = nil
+	}
+	deny, err := web.ParseCIDRs(c.cfg.HTTPDeny)
+	if err != nil {
+		log.Printf("web: http_deny: %v", err)
+		deny = nil
+	}
+	c.webHandlerCache = web.New(c.Packlist, web.Config{Allow: allow, Deny: deny})
+	return c.webHandlerCache
+}
+
+// PacklistURL returns the public HTTP URL of the packlist, or "" when no
+// advertised address is known.
+func (c *Client) PacklistURL() string {
+	ip, port := c.advertise()
+	if ip == "" || port <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%d/packlist.txt", ip, port)
+}
+
+// setAdvertise records the current advertised public address.
+func (c *Client) setAdvertise(ip string, port int) {
+	c.advMu.Lock()
+	c.advIP, c.advPort = ip, port
+	c.advMu.Unlock()
+}
+
+// advertise returns the current advertised public address.
+func (c *Client) advertise() (string, int) {
+	c.advMu.Lock()
+	defer c.advMu.Unlock()
+	return c.advIP, c.advPort
+}
+
+// watchVPN polls hotio's forwarded port + public IP and re-advertises (and re-
+// generates the SXDCC identity when the IP changes) live, without dropping the
+// listener.
+func (c *Client) watchVPN() {
+	w := vpn.Watcher{
+		PortFile: vpn.PortFile(),
+		WgConf:   vpn.WireguardConf(),
+		EchoURL:  vpn.DefaultEchoURL,
+		Interval: 30 * time.Second,
+	}
+	w.Run(context.Background(), c.applyVPNAddress)
+}
+
+// applyVPNAddress pushes a discovered VPN address into the SXDCC/SDCC servers
+// and the client's advertised address.
+func (c *Client) applyVPNAddress(addr vpn.Address) {
+	if c.sxdcc == nil || c.sdcc == nil {
+		return
+	}
+	pinChanged, err := c.sxdcc.SetAdvertise(addr.IP, addr.Port)
+	if err != nil {
+		log.Printf("vpn: SetAdvertise %v: %v", addr, err)
+		return
+	}
+	if ipInt, err := dcc.IPToInt(addr.IP); err == nil {
+		c.sdcc.SetAdvertise(ipInt, addr.Port, c.sxdcc.Pin())
+	}
+	c.setAdvertise(addr.IP, addr.Port)
+	log.Printf("vpn: advertised address %s:%d (pin changed: %v)", addr.IP, addr.Port, pinChanged)
 }
 
 func (c *Client) startWeb() error {
 	if !c.cfg.HTTPEnable {
 		return nil
 	}
-	allow, err := web.ParseCIDRs(c.cfg.HTTPAllow)
-	if err != nil {
-		return err
-	}
-	deny, err := web.ParseCIDRs(c.cfg.HTTPDeny)
-	if err != nil {
-		return err
-	}
-	handler := web.New(c.Packlist, web.Config{Allow: allow, Deny: deny})
 	srv := &http.Server{
 		Addr:    fmt.Sprintf("0.0.0.0:%d", c.cfg.HTTPPort),
-		Handler: handler,
+		Handler: c.webHandler(),
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

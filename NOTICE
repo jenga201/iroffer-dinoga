@@ -1,0 +1,34 @@
+dinoga NOTICE
+
+dinoga is a Go rewrite of iroffer-dinoex (https://iroffer.net/). It is a
+derivative work of the original iroffer-dinoex program and is distributed under
+the same terms.
+
+iroffer-dinoex is:
+
+    Copyright (C) 1998-2005 David Johnson (PMG)
+    Copyright (C) 2000-2025 Dirk Meyer
+
+licensed under the GNU General Public License version 2 only (GPL-2.0-only).
+
+dinoga is therefore licensed under the GNU General Public License version 2
+only. The complete GPL version 2 text is in the accompanying LICENSE file. The
+original C sources, together with their copyright and licence notices, are
+preserved verbatim in the original-dinoex/ subdirectory.
+
+Base container image
+--------------------
+
+The Docker image is built FROM hotio/base (https://github.com/hotio/base),
+which is licensed under the GNU General Public License version 3 (GPL-3.0).
+
+hotio/base is used as an unmodified base image: dinoga adds its own files and
+s6-overlay services on top (including its own /app/forwarded_port_update_app
+hook, which hotio/base ships as an empty placeholder for exactly this purpose)
+and does not modify hotio/base's own scripts or services. hotio/base and
+dinoga's Go binary are separate works aggregated in one image, so the GPL-3.0
+under which hotio/base is distributed does not extend to dinoga's own Go
+sources, which remain GPL-2.0-only.
+
+hotio/base's source code and its GPL-3.0 licence are available at:
+https://github.com/hotio/base

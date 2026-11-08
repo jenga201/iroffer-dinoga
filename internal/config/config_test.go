@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -180,6 +181,103 @@ adddir_min_size 4096
 	}
 	if len(c.AddDirExclude) != 2 || len(c.AddDirMatch) != 2 {
 		t.Fatalf("exclude=%v match=%v", c.AddDirExclude, c.AddDirMatch)
+	}
+}
+
+func TestApplyEnvOverrides(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"IROFFER_SLOTSMAX=9",
+		"IROFFER_USENATIP=1.2.3.4",
+		"IROFFER_PASSIVE_DCC=yes",
+		"IROFFER_CONTROL_PORT=31337",
+		"IROFFER_XDCC_ALLOW=*!*@a.com;;*!*@b.com",
+	}
+	applied := ApplyEnvOverrides(&c, env)
+	if c.SlotsMax != 9 || c.DCCIP != "1.2.3.4" || !c.PassiveDCC || c.ControlPort != 31337 {
+		t.Fatalf("env overrides not applied: %+v", c)
+	}
+	if len(c.XDCCAllow) != 2 || c.XDCCAllow[1] != "*!*@b.com" {
+		t.Fatalf("multi-value allow = %v", c.XDCCAllow)
+	}
+	if len(applied) == 0 || !strings.Contains(applied[0], "control_port") {
+		t.Fatalf("applied = %v", applied)
+	}
+}
+
+func TestLoadWithEnvOverridesFile(t *testing.T) {
+	path := writeConfig(t, "slotsmax 5\nusenatip 9.9.9.9\n")
+	c, applied, err := LoadWithEnv(path, []string{"IROFFER_SLOTSMAX=42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SlotsMax != 42 || c.DCCIP != "9.9.9.9" {
+		t.Fatalf("env should win only where set: %+v", c)
+	}
+	if len(applied) != 1 || !strings.Contains(applied[0], "slotsmax") {
+		t.Fatalf("applied = %v", applied)
+	}
+}
+
+func TestWriteRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "in.config")
+	if err := os.WriteFile(path, []byte("network {\n  server irc.rizon.net 9999\n  user_nick bot\n  channel #frog\n  connectionmethod ssl\n}\nslotsmax 7\ncontrol_port 30000\nusenatip 2.31.76.192\nsxdcc_enable yes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sb strings.Builder
+	if err := Write(&sb, c); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "out.config")
+	if err := os.WriteFile(out, []byte(sb.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.SlotsMax != 7 || c2.ControlPort != 30000 || c2.DCCIP != "2.31.76.192" {
+		t.Fatalf("roundtrip = %+v", c2)
+	}
+	if c2.Networks[0].Server != "irc.rizon.net" || !c2.Networks[0].SSL {
+		t.Fatalf("roundtrip network = %+v", c2.Networks[0])
+	}
+}
+
+func TestResolveMigratesLegacyConfig(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "iroffer.config")
+	if err := os.WriteFile(legacy, []byte("slotsmax 6\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, migrated, err := Resolve(dir, "dinoga.config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated || filepath.Base(resolved) != "dinoga.config" {
+		t.Fatalf("resolved=%q migrated=%v", resolved, migrated)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "dinoga.config")); err != nil {
+		t.Fatalf("dinoga.config not written: %v", err)
+	}
+	if _, err := os.Stat(legacy + ".bak"); err != nil {
+		t.Fatalf("legacy not renamed to .bak: %v", err)
+	}
+
+	// Second resolve uses the migrated file, no further migration.
+	_, migrated2, err := Resolve(dir, "dinoga.config")
+	if err != nil || migrated2 {
+		t.Fatalf("second resolve: migrated=%v err=%v", migrated2, err)
 	}
 }
 

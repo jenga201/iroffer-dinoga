@@ -184,9 +184,7 @@ func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
 	if s.cfg.Motd != "" {
-		for _, line := range strings.Split(s.cfg.Motd, "\n") {
-			fmt.Fprintf(conn, "%s\r\n", strings.TrimRight(line, "\r"))
-		}
+		s.writeMotd(conn)
 	}
 
 	br := bufio.NewReader(conn)
@@ -196,15 +194,28 @@ func (s *Server) handle(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	if !s.checkPassword(trimLine(pwLine)) {
+	if !s.CheckPassword(trimLine(pwLine)) {
 		fmt.Fprint(conn, "Access denied\r\n")
 		return
 	}
 	fmt.Fprint(conn, "Welcome\r\n")
 
+	s.loop(br, conn)
+}
+
+func (s *Server) writeMotd(w io.Writer) {
+	for _, line := range strings.Split(s.cfg.Motd, "\n") {
+		fmt.Fprintf(w, "%s\r\n", strings.TrimRight(line, "\r"))
+	}
+}
+
+// loop runs the interactive command loop — prompt, read, dispatch, repeat —
+// until a command returns ErrQuit or the stream closes. It is shared by the
+// telnet frontend (handle) and the SDCC chat frontend (ServeChat).
+func (s *Server) loop(r *bufio.Reader, w io.Writer) {
 	for {
-		fmt.Fprint(conn, "> \r\n")
-		line, err := br.ReadString('\n')
+		fmt.Fprint(w, "> \r\n")
+		line, err := r.ReadString('\n')
 		if err != nil {
 			return
 		}
@@ -214,20 +225,39 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		cmd, ok := s.reg.Lookup(fields[0])
 		if !ok {
-			fmt.Fprintf(conn, "unknown command: %s\r\n", fields[0])
+			fmt.Fprintf(w, "unknown command: %s\r\n", fields[0])
 			continue
 		}
 		if cmd.Run == nil {
-			fmt.Fprintf(conn, "command %s has no handler\r\n", cmd.Name)
+			fmt.Fprintf(w, "command %s has no handler\r\n", cmd.Name)
 			continue
 		}
-		if err := cmd.Run(conn, fields[1:]); err != nil {
+		if err := cmd.Run(w, fields[1:]); err != nil {
 			if err == ErrQuit {
 				return
 			}
-			fmt.Fprintf(conn, "error: %v\r\n", err)
+			fmt.Fprintf(w, "error: %v\r\n", err)
 		}
 	}
+}
+
+// CheckPassword verifies a candidate against the configured credential in
+// constant time. It is exported so the SXDCC server can gate SDCC chat on the
+// same admin credential used by the telnet frontend.
+func (s *Server) CheckPassword(candidate string) bool {
+	return s.checkPassword(candidate)
+}
+
+// ServeChat runs the interactive admin console on an already-authenticated
+// stream. It is the SDCC entry point: the caller has already verified the admin
+// credential, so no password prompt is shown and the first line written to the
+// client is WELCOME.
+func (s *Server) ServeChat(r *bufio.Reader, w io.Writer) {
+	if s.cfg.Motd != "" {
+		s.writeMotd(w)
+	}
+	fmt.Fprint(w, "WELCOME\r\n")
+	s.loop(r, w)
 }
 
 func trimLine(s string) string {

@@ -94,6 +94,8 @@ func applyFile(c *Config, path string) error {
 			c.PortStart = atoiOr(value, c.PortStart)
 		case "tcprangelimit":
 			c.PortLimit = atoiOr(value, c.PortLimit)
+		case "control_port":
+			c.ControlPort = atoiOr(value, c.ControlPort)
 		case "passive_dcc":
 			c.PassiveDCC = yesNo(value, c.PassiveDCC)
 
@@ -139,12 +141,6 @@ func applyFile(c *Config, path string) error {
 			c.CertFile = value
 		case "sxdcc_key":
 			c.KeyFile = value
-		case "sxdcc_bounce":
-			c.SXDCCBounce = value
-		case "sxdcc_tunnel":
-			c.SXDCCTunnel = value
-		case "sxdcc_tunnel_secret":
-			c.SXDCCTunnelSecret = value
 		case "headline":
 			c.Headline = value
 		case "periodicmsg":

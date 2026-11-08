@@ -41,12 +41,13 @@ type Config struct {
 	Channel    string
 	ChannelKey string
 
-	DCCIP      string // advertised public IP for DCC/SXDCC (usenatip)
-	FileDir    string // directory scanned into the packlist (filedir)
-	PortStart  int    // first DCC/TLS port (tcprangestart)
-	PortLimit  int    // last DCC/TLS port (tcprangelimit)
-	AutoAdd    int    // seconds between FileDir rescans (autoadd_time; 0 = off)
-	PassiveDCC bool   // reverse/passive DCC (passive_dcc)
+	DCCIP       string // advertised public IP for DCC/SXDCC (usenatip)
+	FileDir     string // directory scanned into the packlist (filedir)
+	PortStart   int    // first DCC/TLS port (tcprangestart)
+	PortLimit   int    // last DCC/TLS port (tcprangelimit)
+	ControlPort int    // single shared control port (control_port; 0 = use PortStart)
+	AutoAdd     int    // seconds between FileDir rescans (autoadd_time; 0 = off)
+	PassiveDCC  bool   // reverse/passive DCC (passive_dcc)
 
 	ReconnectDelay         int
 	StateFile              string
@@ -73,10 +74,6 @@ type Config struct {
 	SXDCCEnable bool
 	CertFile    string
 	KeyFile     string
-
-	SXDCCBounce       string // client-facing public IP of the bounce relay (sxdcc_bounce)
-	SXDCCTunnel       string // relay tunnel endpoint the bot dials out to (sxdcc_tunnel)
-	SXDCCTunnelSecret string // shared secret for the relay (sxdcc_tunnel_secret)
 
 	Headline         string // announced to the channel on join
 	PeriodicMsg      string // periodic channel message
@@ -108,6 +105,7 @@ func base() Config {
 		FileDir:        "/data",
 		PortStart:      30000,
 		PortLimit:      30001,
+		ControlPort:    0,
 		SlotsMax:       3,
 		QueueSize:      100,
 		IdleQueueSize:  50,
@@ -129,6 +127,18 @@ func Load(path string) (Config, error) {
 		return c, err
 	}
 	return ensureNetworks(c), nil
+}
+
+// LoadWithEnv reads path (as Load), then overlays IROFFER_* environment
+// variables, which win over any file-provided value. The returned slice
+// describes each override applied, in stable order, for startup INFO logging.
+func LoadWithEnv(path string, environ []string) (Config, []string, error) {
+	c, err := Load(path)
+	if err != nil {
+		return c, nil, err
+	}
+	applied := ApplyEnvOverrides(&c, environ)
+	return c, applied, nil
 }
 
 // ensureNetworks makes the single-network mirror fields and Networks consistent:

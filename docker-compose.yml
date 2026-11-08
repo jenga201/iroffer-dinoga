@@ -1,12 +1,32 @@
 services:
   dinoga:
-    build: .
-    image: ${IMAGE_NAME:-ghcr.io/jenga201/dinoga}:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${IMAGE_NAME:-ghcr.io/jenga201/dinoga}:${IMAGE_TAG:-noblevpn}
     container_name: ${CONTAINER_NAME:-dinoga}
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
     env_file:
       - .env
+    environment:
+      # Overridable from the shell (or .env).
+      - VPN_PIA_PREFERRED_REGION=${VPN_PIA_PREFERRED_REGION:-}
+      - VPN_PIA_REGION_TIMEOUT=${VPN_PIA_REGION_TIMEOUT:-}
+      - VPN_PIA_REGION_BACKOFF=${VPN_PIA_REGION_BACKOFF:-}
+      - VPN_PIA_REGION_EXHAUSTED_BACKOFF=${VPN_PIA_REGION_EXHAUSTED_BACKOFF:-}
+      - VPN_PIA_REGION_COOLDOWN=${VPN_PIA_REGION_COOLDOWN:-}
+      - DINOGA_REGION_STATE=${DINOGA_REGION_STATE:-}
     volumes:
+      - ${CONFIG_DIR:-./config}:/config
       - ${DATA_DIR:-./files}:/data
-    ports:
-      - ${PORT_RANGE:-30000-30001}:${PORT_RANGE:-30000-30001}
+    # In VPN mode no ports are published: the forwarded port is the single
+    # inbound path (hotio redirects it to the control port). For non-VPN use,
+    # publish the control port explicitly:
+    # ports:
+    #   - "${CONTROL_PORT:-30000}:30000"

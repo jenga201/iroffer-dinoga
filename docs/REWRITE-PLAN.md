@@ -308,13 +308,15 @@ Spec: `IRC/dcc-protocol/SXDCC.md`.
 
 Spec: `IRC/dcc-protocol/SXDCC-TRANSPORT.md`.
 
-- [ ] Pluggable data transport (`tcp` baseline + `quic` direct), reusing the SPKI pin + `datatoken`
-- [ ] Reverse-tunnel bounce baseline: `cmd/bounce` relay + bot outbound tunnel (`internal/bounce`), byte-forwarding (never terminates TLS)
-- [ ] ICE candidate exchange on the control channel (`CANDIDATE` / `CANDIDATES-END`, scoped by `datatoken`)
-- [ ] STUN server-reflexive discovery + connectivity checks (pion/ice + pion/stun)
-- [ ] QUIC data channel (quic-go) with hole-punched direct path preference
-- [ ] TURN relay fallback (pion/turn) for non-punchable peers
-- [ ] Opportunistic direct migration at transfer setup with relay fallback
-- [ ] Docker "real NAT" topology test (bot + client behind SNAT gateways + public bounce)
+- [x] Pluggable data transport (`tcp` baseline + `quic` direct), reusing the SPKI pin + `datatoken`
+- [x] Reverse-tunnel bounce baseline: `cmd/bounce` relay + bot outbound tunnel (`internal/bounce`), byte-forwarding (never terminates TLS)
+- [x] QUIC data channel (quic-go v0.60.0, Go 1.25) — active/direct, `transport=quic`, SPKI pin + `datatoken`, `sxdcc_transport` directive
+- [x] ICE candidate exchange on the control channel (`CANDIDATE` / `CANDIDATES-END`, scoped by `datatoken`)
+- [x] STUN server-reflexive discovery (`internal/stun`, minimal RFC 8489 client) + hole-punched direct path (QUIC over a pre-bound UDP socket, punch packets)
+- [x] TURN relay fallback (pion/turn v4.1.4) — `internal/sxdcc/turn.go` + `relay` candidate (`sxdcc_turn*` directives)
+- [x] Relay/direct fallback at transfer setup — `serveDataQUIC` accepts on direct or relay listener, whichever completes first
+- [x] Docker "real NAT" topology test (bounce baseline)
+- [x] Docker "real NAT" hole-punch test — `nat-holepunch/` with `cmd/natgw` (userspace full-cone NAT + STUN), `cmd/holepunchtest` (srflx discovery → punch → QUIC over the reflexive address); 1 MiB byte-verified through the NAT, deterministic
+- [x] Resolve loopback candidate-exchange flake — root cause was `serveDataQUIC`'s deferred `tr.pconn.Close()` dropping in-flight bytes/FIN (QUIC `io.Copy` returns after queuing, not delivery); fixed by waiting for `conn.Context().Done()` before teardown. `TestQUICDataRoundtrip`/`TestQUICRelayCandidate` now 50/50 deterministic.
 
-Dependencies (Phase B): quic-go, pion/ice, pion/stun, pion/turn (add to `go.mod`).
+Dependencies: quic-go v0.60.0 (Go 1.25), pion/turn v4.1.4. `pion/ice`/`pion/stun` were implemented natively (`internal/stun`) instead of pulled in.

@@ -92,6 +92,7 @@ func New(packList func() []packs.Pack, cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.serveList)
 	mux.HandleFunc("GET /search", h.serveSearch)
+	mux.HandleFunc("GET /packlist.txt", h.servePacklistTxt)
 	mux.HandleFunc("GET /list.json", h.serveJSON)
 	mux.HandleFunc("GET /md5/{name}", h.serveMD5)
 	mux.HandleFunc("GET /sfv", h.serveSFV)
@@ -162,6 +163,16 @@ func (h *handler) renderList(w http.ResponseWriter, q string) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = h.tmpl.Execute(w, data)
+}
+
+// servePacklistTxt emits a plain-text pack listing, one pack per line, in the
+// XDCC list line format. It is the endpoint advertised in the bot's
+// "xdcc list" reply (http://<ip>:<port>/packlist.txt).
+func (h *handler) servePacklistTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	for _, p := range h.packs() {
+		fmt.Fprintf(w, "#%d %d %s\n", p.Number, p.Size, p.Name)
+	}
 }
 
 func (h *handler) serveJSON(w http.ResponseWriter, r *http.Request) {

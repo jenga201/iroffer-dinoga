@@ -11,5 +11,16 @@ dinoga
 *.test
 *.out
 
-# Local test config (contains secrets — never commit)
+# Local test config (contains secrets - never commit)
 /localtest/
+
+# Runtime config + VPN state + region history (secrets - never commit)
+/config/
+
+# Local E2E / test fixtures (binaries + scratch configs - never commit)
+/files/
+/sxdcc-e2e/
+
+# Python bytecode
+__pycache__/
+*.pyc

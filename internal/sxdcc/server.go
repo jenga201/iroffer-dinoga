@@ -14,6 +14,7 @@ import (
 
 	"github.com/jenga201/dinoga/internal/dcc"
 	"github.com/jenga201/dinoga/internal/packs"
+	"github.com/jenga201/dinoga/internal/token"
 )
 
 // Host is the interface the surrounding bot implements so the SXDCC server can
@@ -44,8 +45,6 @@ type Config struct {
 	TokenTTL  time.Duration // rendezvous token lifetime
 	Passive   bool          // passive/reverse data channel (client listens, bot dials)
 	Slot      SlotGate      // optional: gate SEND on transfer slots (nil = unbounded)
-	AdvertiseIP string      // optional public IP to advertise (defaults to IP)
-	NewListener func() (net.Listener, int, error) // optional listener factory (bounce mode)
 }
 
 func (c Config) ttl() time.Duration {
@@ -57,24 +56,41 @@ func (c Config) ttl() time.Duration {
 
 // transfer is one pending or in-flight data-channel transfer.
 type transfer struct {
-	pack    packs.Pack
-	ln      net.Listener // active: the bot listens here
-	passive bool         // passive: the bot dials the client after ACCEPT
-	release func()       // queue slot release, if gated
+	pack        packs.Pack
+	passive     bool      // passive: the bot dials the client after ACCEPT
+	release     func()    // queue slot release, if gated
+	releaseOnce sync.Once // ensures release() runs exactly once
+	ses         *session  // control session that issued the transfer (for DONE/ERR)
+	claimed     bool      // data connection arrived (guarded by tmu)
+}
+
+// complete releases the transfer's queue slot exactly once, so concurrent
+// teardown paths (e.g. QUIC vs control-port fallback) cannot double-release.
+func (tr *transfer) complete() {
+	tr.releaseOnce.Do(func() {
+		if tr.release != nil {
+			tr.release()
+		}
+	})
 }
 
 // Server is the bot-side SXDCC server.
 type Server struct {
 	host Host
 	cfg  Config
+
+	idMu sync.Mutex // guards id (regenerated on VPN IP change)
 	id   *Identity
 
 	tmu        sync.Mutex
 	transfers  map[string]*transfer // datatoken -> transfer
-	tokens     *tokenStore          // rendezvous control tokens
-	dataTokens *tokenStore          // per-pack data tokens
+	tokens     *token.Store         // rendezvous control tokens
+	dataTokens *token.Store         // per-pack data tokens
+	pending    map[string]string    // rendezvous token -> trigger command ("SEND 1")
 
-	advertiseIP uint32
+	addrMu        sync.Mutex // guards advertiseIP + advertisePort
+	advertiseIP   uint32
+	advertisePort int // public port advertised to clients (forwarded port when VPN)
 }
 
 // New builds a Server, loading or creating the identity and computing the pin.
@@ -90,19 +106,14 @@ func New(host Host, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.AdvertiseIP != "" {
-		advertiseIP, err = dcc.IPToInt(cfg.AdvertiseIP)
-		if err != nil {
-			return nil, err
-		}
-	}
 	s := &Server{
 		host:        host,
 		cfg:         cfg,
 		id:          id,
 		transfers:   map[string]*transfer{},
-		tokens:      newTokenStore(cfg.ttl()),
-		dataTokens:  newTokenStore(cfg.ttl()),
+		tokens:      token.New(cfg.ttl()),
+		dataTokens:  token.New(cfg.ttl()),
+		pending:     map[string]string{},
 		advertiseIP: advertiseIP,
 	}
 	go s.pruneLoop()
@@ -112,40 +123,147 @@ func New(host Host, cfg Config) (*Server, error) {
 func (s *Server) pruneLoop() {
 	t := time.NewTicker(time.Minute)
 	for range t.C {
-		s.tokens.prune()
-		s.dataTokens.prune()
+		s.tokens.Prune()
+		s.dataTokens.Prune()
 	}
 }
 
 // Identity returns the loaded identity.
-func (s *Server) Identity() *Identity { return s.id }
+func (s *Server) Identity() *Identity {
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+	return s.id
+}
 
 // Pin returns the server's SPKI pin.
-func (s *Server) Pin() string { return s.id.Pin }
+func (s *Server) Pin() string {
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+	return s.id.Pin
+}
+
+// SetControlPort records the bot's single shared control port, which (without a
+// VPN) is also the address advertised for active data channels.
+func (s *Server) SetControlPort(port int) {
+	s.addrMu.Lock()
+	s.advertisePort = port
+	s.addrMu.Unlock()
+}
+
+// SetAdvertise updates the public address advertised to clients. When ipStr
+// differs from the current advertised IP, a fresh SXDCC identity (self-signed
+// cert with an IP subjectAltName + new SPKI pin) is generated and persisted, so
+// the advertised IP always has a matching pin. It reports whether the identity
+// (and therefore the pin) changed.
+func (s *Server) SetAdvertise(ipStr string, port int) (bool, error) {
+	ipInt, err := dcc.IPToInt(ipStr)
+	if err != nil {
+		return false, err
+	}
+
+	s.addrMu.Lock()
+	defer s.addrMu.Unlock()
+
+	ipChanged := ipInt != s.advertiseIP
+	if ipChanged {
+		id, err := GenerateIdentity(ipStr)
+		if err != nil {
+			return false, err
+		}
+		if err := writeIdentity(s.cfg.CertFile, s.cfg.KeyFile, id.Cert); err != nil {
+			return false, err
+		}
+		s.idMu.Lock()
+		s.id = id
+		s.idMu.Unlock()
+		s.advertiseIP = ipInt
+	}
+	s.advertisePort = port
+	return ipChanged, nil
+}
+
+// AdvertisePort returns the current public port advertised to clients.
+func (s *Server) AdvertisePort() int {
+	s.addrMu.Lock()
+	defer s.addrMu.Unlock()
+	return s.advertisePort
+}
+
+// advertiseAddr returns the current advertised IP (DCC network order) and port.
+func (s *Server) advertiseAddr() (uint32, int) {
+	s.addrMu.Lock()
+	defer s.addrMu.Unlock()
+	return s.advertiseIP, s.advertisePort
+}
+
+// expireTransfer removes a transfer whose data connection never arrived, so a
+// client that never dials cannot leak a queue slot.
+func (s *Server) expireTransfer(datatoken string, after time.Duration) {
+	time.Sleep(after)
+	s.tmu.Lock()
+	tr, ok := s.transfers[datatoken]
+	if !ok || tr.claimed {
+		s.tmu.Unlock()
+		return
+	}
+	delete(s.transfers, datatoken)
+	s.tmu.Unlock()
+	if tr.ses != nil {
+		tr.ses.write("ERR 408 transfer timed out")
+	}
+	tr.complete()
+}
+
+// SetPendingCommand associates the IRC trigger's command (e.g. "SEND 1") with a
+// rendezvous token so the bot auto-executes it once the client authenticates
+// (SXDCC.md §9.4). It is a no-op for an empty token or command.
+func (s *Server) SetPendingCommand(token, command string) {
+	if token == "" || command == "" {
+		return
+	}
+	s.tmu.Lock()
+	s.pending[token] = command
+	s.tmu.Unlock()
+}
+
+// takePendingCommand atomically takes and removes the command for token.
+func (s *Server) takePendingCommand(token string) string {
+	s.tmu.Lock()
+	defer s.tmu.Unlock()
+	cmd := s.pending[token]
+	delete(s.pending, token)
+	return cmd
+}
 
 // TLSConfig returns the TLS 1.3 server config.
-func (s *Server) TLSConfig() *tls.Config { return s.id.TLSConfig() }
+func (s *Server) TLSConfig() *tls.Config {
+	s.idMu.Lock()
+	id := s.id
+	s.idMu.Unlock()
+	return id.TLSConfig()
+}
 
 // Rendezvous mints a control token and returns the IRC invitation line and the
 // token. The token is what the AUTH command must present.
-func (s *Server) Rendezvous(port int) (line, token string, err error) {
-	token, err = s.tokens.mint()
+func (s *Server) Rendezvous() (line, token string, err error) {
+	token, err = s.tokens.Mint()
 	if err != nil {
 		return "", "", err
 	}
-	s.tokens.add(token)
-	return BuildRendezvous(s.advertiseIP, port, token, s.id.Pin), token, nil
+	s.tokens.Add(token)
+	ip, port := s.advertiseAddr()
+	return BuildRendezvous(ip, port, token, s.Pin()), token, nil
 }
 
 // Listen opens a raw TCP listener on the first free port in [PortStart, PortLimit].
 func (s *Server) Listen() (net.Listener, int, error) {
-	if s.cfg.NewListener != nil {
-		return s.cfg.NewListener()
-	}
 	return dcc.Listen(s.cfg.PortStart, s.cfg.PortLimit)
 }
 
 // Serve accepts TLS connections on ln and handles each on its own goroutine.
+// It is the standalone SXDCC listener; the shared-listener deployment in
+// internal/irc performs the same first-line read and then dispatches to
+// HandleConn (SXDCC) or sdcc.HandleConn (SDCC).
 func (s *Server) Serve(ln net.Listener) error {
 	tlsLn := tls.NewListener(ln, s.id.TLSConfig())
 	for {
@@ -153,7 +271,15 @@ func (s *Server) Serve(ln net.Listener) error {
 		if err != nil {
 			return err
 		}
-		go s.handleControl(conn)
+		go func() {
+			defer conn.Close()
+			r := bufio.NewReader(conn)
+			line, err := readFirstLine(r)
+			if err != nil {
+				return
+			}
+			s.HandleConn(conn, r, line)
+		}()
 	}
 }
 
@@ -170,9 +296,21 @@ type session struct {
 	auth   bool
 }
 
-func (s *Server) handleControl(conn net.Conn) {
-	defer conn.Close()
-	ses := &session{s: s, conn: conn, r: bufio.NewReader(conn), remote: conn.RemoteAddr().String()}
+// HandleConn serves one accepted TLS connection for SXDCC (file transfer). The
+// caller has already read firstLine (and must pass r, the buffered reader it
+// used, so buffered bytes are not lost). It demultiplexes the SXDCC data
+// fallback (DATA) from the control session (AUTH).
+func (s *Server) HandleConn(conn net.Conn, r *bufio.Reader, firstLine string) {
+	ses := &session{s: s, conn: conn, r: r, remote: conn.RemoteAddr().String()}
+
+	f := strings.Fields(firstLine)
+	if len(f) == 2 && strings.EqualFold(f[0], "DATA") {
+		s.serveDataOverControl(ses, f[1])
+		return
+	}
+	if firstLine != "" && !ses.handle(firstLine) {
+		return
+	}
 	for {
 		line, err := ses.readLine()
 		if err != nil {
@@ -184,6 +322,71 @@ func (s *Server) handleControl(conn net.Conn) {
 		if !ses.handle(line) {
 			return
 		}
+	}
+}
+
+// readFirstLine reads one CRLF line enforcing the control length bound.
+func readFirstLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	if len(line) > maxLineLen {
+		return "", errors.New("sxdcc: control line too long")
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// serveDataOverControl serves the data-channel fallback: the client, unable to
+// hole-punch a direct QUIC path, re-dialed the control port and sent
+// DATA <datatoken> as its first line. Any in-flight QUIC path is cancelled and
+// the pack is streamed over this connection. Completion/errors are signalled on
+// the original control session (tr.ses), not on this data connection.
+func (s *Server) serveDataOverControl(ses *session, datatoken string) {
+	s.tmu.Lock()
+	tr := s.transfers[datatoken]
+	s.tmu.Unlock()
+	if tr == nil {
+		_, _ = fmt.Fprintf(ses.conn, "ERR 404 unknown data token\r\n")
+		return
+	}
+
+	if !s.dataTokens.Consume(datatoken) {
+		if tr.ses != nil {
+			tr.ses.write("ERR 401 bad data token")
+		}
+		return
+	}
+
+	s.tmu.Lock()
+	tr.claimed = true
+	s.tmu.Unlock()
+
+	defer func() {
+		s.tmu.Lock()
+		delete(s.transfers, datatoken)
+		s.tmu.Unlock()
+		tr.complete()
+	}()
+
+	rc, err := s.host.OpenFile(tr.pack.Path)
+	if err != nil {
+		if tr.ses != nil {
+			tr.ses.write("ERR 500 %v", err)
+		}
+		return
+	}
+	defer rc.Close()
+
+	n, err := io.Copy(ses.conn, rc)
+	if err != nil {
+		if tr.ses != nil {
+			tr.ses.write("ERR 500 %v", err)
+		}
+		return
+	}
+	if tr.ses != nil {
+		tr.ses.write("DONE #%d %d", tr.pack.Number, n)
 	}
 }
 
@@ -217,12 +420,16 @@ func (ses *session) handle(line string) bool {
 			ses.write("ERR 401 unauthorized")
 			return false
 		}
-		if len(f) != 2 || !ses.s.tokens.consume(f[1]) {
+		if len(f) != 2 || !ses.s.tokens.Consume(f[1]) {
 			ses.write("ERR 401 unauthorized")
 			return false
 		}
 		ses.auth = true
 		ses.write("OK %d", time.Now().UnixNano())
+		// Auto-execute the command named by the IRC trigger (SXDCC.md §9.4).
+		if cmd := ses.s.takePendingCommand(f[1]); cmd != "" {
+			return ses.handle(cmd)
+		}
 		return true
 	}
 
@@ -273,12 +480,12 @@ func (ses *session) handleSend(f []string) {
 		return
 	}
 
-	datatoken, err := ses.s.dataTokens.mint()
+	datatoken, err := ses.s.dataTokens.Mint()
 	if err != nil {
 		ses.write("ERR 500 token mint failed")
 		return
 	}
-	ses.s.dataTokens.add(datatoken)
+	ses.s.dataTokens.Add(datatoken)
 
 	// Optional queue/slot gating.
 	var release func()
@@ -302,24 +509,20 @@ func (ses *session) handleSend(f []string) {
 		ses.s.transfers[datatoken] = &transfer{pack: p, passive: true, release: release}
 		ses.s.tmu.Unlock()
 		// The bot responds with port 0; the client ACCEPTs with its listener.
-		ses.write("SEND #%d %d %q %d 0 %s", p.Number, p.Size, p.Name, ses.s.advertiseIP, datatoken)
+		ip, _ := ses.s.advertiseAddr()
+		ses.write("SEND #%d %d %q %d 0 %s", p.Number, p.Size, p.Name, ip, datatoken)
 		return
 	}
 
-	ln, port, err := ses.s.Listen()
-	if err != nil {
-		if release != nil {
-			release()
-		}
-		ses.write("ERR 500 %v", err)
-		return
-	}
+	// Active: data rides the shared control port. The client dials the control
+	// address and sends DATA <datatoken>; serveDataOverControl streams it.
 	ses.s.tmu.Lock()
-	ses.s.transfers[datatoken] = &transfer{pack: p, ln: ln, release: release}
+	ses.s.transfers[datatoken] = &transfer{pack: p, release: release, ses: ses}
 	ses.s.tmu.Unlock()
 
-	ses.write("SEND #%d %d %q %d %d %s", p.Number, p.Size, p.Name, ses.s.advertiseIP, port, datatoken)
-	go ses.s.serveData(ses, datatoken)
+	ip, port := ses.s.advertiseAddr()
+	ses.write("SEND #%d %d %q %d %d %s", p.Number, p.Size, p.Name, ip, port, datatoken)
+	go ses.s.expireTransfer(datatoken, 2*time.Minute)
 }
 
 // handleAccept handles the client's passive-listen reply:
@@ -385,68 +588,6 @@ func (ses *session) handleBatch(arg string) {
 	ses.write("OK %d pack(s) in range", count)
 }
 
-// serveData streams one pack on an active data conn after validating its
-// datatoken. The bot is the TLS server and the client is the origin (sends the
-// DATA line).
-func (s *Server) serveData(ses *session, datatoken string) {
-	s.tmu.Lock()
-	tr := s.transfers[datatoken]
-	s.tmu.Unlock()
-	if tr == nil {
-		ses.write("ERR 500 lost transfer")
-		return
-	}
-	defer func() {
-		if tr.ln != nil {
-			tr.ln.Close()
-		}
-		s.tmu.Lock()
-		delete(s.transfers, datatoken)
-		s.tmu.Unlock()
-		if tr.release != nil {
-			tr.release()
-		}
-	}()
-
-	conn, err := tr.ln.Accept()
-	if err != nil {
-		return
-	}
-
-	tlsConn := tls.Server(conn, s.id.TLSConfig())
-	if err := tlsConn.Handshake(); err != nil {
-		conn.Close()
-		return
-	}
-	defer tlsConn.Close()
-
-	br := bufio.NewReader(tlsConn)
-	line, err := br.ReadString('\n')
-	if err != nil {
-		return
-	}
-	line = strings.TrimRight(line, "\r\n")
-	f := strings.Fields(line)
-	if len(f) != 2 || !strings.EqualFold(f[0], "DATA") || !s.dataTokens.consume(f[1]) {
-		ses.write("ERR 401 bad data token")
-		return
-	}
-
-	rc, err := s.host.OpenFile(tr.pack.Path)
-	if err != nil {
-		ses.write("ERR 500 %v", err)
-		return
-	}
-	defer rc.Close()
-
-	n, err := io.Copy(tlsConn, rc)
-	if err != nil {
-		ses.write("ERR 500 %v", err)
-		return
-	}
-	ses.write("DONE #%d %d", tr.pack.Number, n)
-}
-
 // serveDataPassive dials the client's listener, acts as the TLS server on the
 // dialed connection, sends the DATA binding line (the bot is the origin), and
 // streams the pack.
@@ -461,9 +602,7 @@ func (s *Server) serveDataPassive(ses *session, datatoken, addr string) {
 		s.tmu.Lock()
 		delete(s.transfers, datatoken)
 		s.tmu.Unlock()
-		if tr.release != nil {
-			tr.release()
-		}
+		tr.complete()
 	}()
 
 	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
