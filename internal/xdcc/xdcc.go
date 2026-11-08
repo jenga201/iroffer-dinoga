@@ -89,6 +89,9 @@ func info(c Client, target, message string) {
 		return
 	}
 	c.Notice(target, fmt.Sprintf("** Pack #%d: %s (%d bytes) **", p.Number, p.Name, p.Size))
+	if p.Desc != "" {
+		c.Notice(target, fmt.Sprintf("**   %s **", p.Desc))
+	}
 }
 
 // batch sends a contiguous range: "xdcc batch #<start>-#<end>".

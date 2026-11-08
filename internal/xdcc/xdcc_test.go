@@ -100,3 +100,13 @@ func TestRemoveNothing(t *testing.T) {
 		t.Fatalf("notices = %v", c.notices)
 	}
 }
+
+func TestInfoDescription(t *testing.T) {
+	pl := threePacks()
+	pl[0].Desc = "first pack"
+	c := &stubClient{packlist: pl}
+	Handle(c, "u", "xdcc info #1")
+	if !strings.Contains(strings.Join(c.notices, "\n"), "first pack") {
+		t.Fatalf("notices = %v", c.notices)
+	}
+}

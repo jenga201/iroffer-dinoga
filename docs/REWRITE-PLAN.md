@@ -191,7 +191,7 @@ iroffer-dinoga/
 - [x] Scan `filedir` / `autoadd_dir`
 - [x] `autoadd_time` periodic rescan (off the IRC loop)
 - [x] Natural sort (`strnatcmp` style) — implemented as `packs.WithNaturalSort()` option (not yet the default)
-- [ ] `addpack` / `removepack` / `chdesc` (with #12)
+- [x] `addpack` / `removepack` / `chdesc` (with #12; descriptions persisted and shown in `xdcc info`)
 - [x] `noduplicatefiles` / `no_duplicate_filenames`
 - [x] `adddir_exclude` / `adddir_match` / `adddir_min_size`
 - [ ] MD5/SFV sidecars + groups

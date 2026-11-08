@@ -34,6 +34,7 @@ type Pack struct {
 	Path    string
 	Size    int64
 	ModTime time.Time
+	Desc    string // optional operator/user-facing description (set by `chdesc`)
 
 	hash *hashState // memoized checksums; shared by copies of this pack
 }
@@ -179,6 +180,21 @@ func newPack(path, name string, info fs.FileInfo) Pack {
 		ModTime: info.ModTime(),
 		hash:    &hashState{},
 	}
+}
+
+// FromPath builds a Pack for a single file path, statting it for its name,
+// size, and modification time. It is used by runtime pack management
+// (the admin `addpack` command) to add files that may live outside the
+// scanned directory.
+func FromPath(p string) (Pack, error) {
+	info, err := os.Stat(p)
+	if err != nil {
+		return Pack{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return Pack{}, fmt.Errorf("not a regular file: %s", p)
+	}
+	return newPack(filepath.Clean(p), filepath.Base(p), info), nil
 }
 
 func accept(o *options, name string, info fs.FileInfo) bool {

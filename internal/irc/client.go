@@ -29,7 +29,6 @@ import (
 	"github.com/jenga201/dinoga/internal/packs"
 	"github.com/jenga201/dinoga/internal/queue"
 	"github.com/jenga201/dinoga/internal/sdcc"
-	"github.com/jenga201/dinoga/internal/state"
 	"github.com/jenga201/dinoga/internal/sxdcc"
 	throttle "github.com/jenga201/dinoga/internal/transfer"
 	"github.com/jenga201/dinoga/internal/vpn"
@@ -69,8 +68,12 @@ type Client struct {
 	cfg    config.Config
 	logger *logging.Logger
 
-	mu       sync.RWMutex // guards packlist
+	mu       sync.RWMutex // guards packlist + extras/descs/excluded
 	packlist []packs.Pack
+
+	extras   map[string]packs.Pack // runtime-added packs (addpack), keyed by path
+	descs    map[string]string     // pack descriptions (chdesc), keyed by path
+	excluded map[string]bool       // paths removed from the list (removepack)
 
 	tmu       sync.Mutex // guards transfers/nextToken
 	transfers map[int]*transfer
@@ -138,6 +141,7 @@ func (c *Client) Run(ctx context.Context) error {
 		log.Printf("admin: %v", err)
 	}
 
+	c.loadState()
 	if err := c.scan(); err != nil {
 		log.Printf("initial scan of %s: %v", c.cfg.FileDir, err)
 	}
@@ -631,10 +635,11 @@ func (c *Client) scan() error {
 		return err
 	}
 	c.mu.Lock()
-	c.packlist = pl
+	merged := c.mergeLocked(pl)
+	c.packlist = merged
 	c.mu.Unlock()
-	log.Printf("packlist: %d pack(s) from %s", len(pl), c.cfg.FileDir)
-	c.persistState(pl)
+	log.Printf("packlist: %d pack(s) from %s", len(merged), c.cfg.FileDir)
+	c.persist()
 	return nil
 }
 
@@ -655,19 +660,6 @@ func (c *Client) scanOptions() []packs.Option {
 		opts = append(opts, packs.WithMinSize(c.cfg.AddDirMinSize))
 	}
 	return opts
-}
-
-func (c *Client) persistState(pl []packs.Pack) {
-	if c.cfg.StateFile == "" {
-		return
-	}
-	recs := make([]state.PackRecord, len(pl))
-	for i, p := range pl {
-		recs[i] = state.PackRecord{Number: p.Number, Name: p.Name, Path: p.Path, Size: p.Size}
-	}
-	if err := state.Save(c.cfg.StateFile, &state.File{Packs: recs}); err != nil {
-		log.Printf("state save: %v", err)
-	}
 }
 
 func (c *Client) rescanLoop(ctx context.Context, d time.Duration) {
@@ -1168,6 +1160,7 @@ func (c *Client) adminServer() *admin.Server {
 				return out
 			},
 		})
+		c.registerAdminCommands(c.adminSrv)
 	}
 	return c.adminSrv
 }

@@ -190,3 +190,22 @@ func BenchmarkScan(b *testing.B) {
 		}
 	}
 }
+
+func TestFromPath(t *testing.T) {
+	dir := t.TempDir()
+	p := writeFile(t, dir, "a.bin", []byte("hello"))
+	pk, err := FromPath(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pk.Name != "a.bin" || pk.Path != p || pk.Size != 5 || pk.ModTime.IsZero() {
+		t.Fatalf("pack = %#v", pk)
+	}
+
+	if _, err := FromPath(filepath.Join(dir, "missing.bin")); err == nil {
+		t.Fatal("FromPath should error for a missing file")
+	}
+	if _, err := FromPath(dir); err == nil {
+		t.Fatal("FromPath should error for a directory")
+	}
+}
