@@ -176,6 +176,12 @@ func applyFile(c *Config, path string) error {
 			if n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
 				c.AddDirMinSize = n
 			}
+		case "autoaddann":
+			c.AutoAddAnn = yesNo(value, c.AutoAddAnn)
+		case "flood_protection_rate":
+			c.FloodProtectionRate = atoiOr(value, c.FloodProtectionRate)
+		case "autoignore_time":
+			c.AutoIgnoreTime = atoiOr(value, c.AutoIgnoreTime)
 		}
 	}
 	if err := sc.Err(); err != nil {

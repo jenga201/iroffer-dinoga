@@ -207,6 +207,18 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 			apply("adddir_min_size", v)
 		}
 	}
+	if v, ok := get(env, "autoaddann"); ok && v != "" {
+		c.AutoAddAnn = yesNo(v, c.AutoAddAnn)
+		apply("autoaddann", v)
+	}
+	if v, ok := get(env, "flood_protection_rate"); ok && v != "" {
+		c.FloodProtectionRate = atoiOr(v, c.FloodProtectionRate)
+		apply("flood_protection_rate", v)
+	}
+	if v, ok := get(env, "autoignore_time"); ok && v != "" {
+		c.AutoIgnoreTime = atoiOr(v, c.AutoIgnoreTime)
+		apply("autoignore_time", v)
+	}
 
 	return applied
 }

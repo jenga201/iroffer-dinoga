@@ -360,3 +360,43 @@ func TestEnvLoggingOverrides(t *testing.T) {
 		t.Fatalf("logging env overrides = %+v", c)
 	}
 }
+
+func TestAnnounceFloodDefaults(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AutoAddAnn || c.FloodProtectionRate != 6 || c.AutoIgnoreTime != 10 {
+		t.Fatalf("announce/flood defaults = %+v", c)
+	}
+}
+
+func TestLoadAnnounceAndFlood(t *testing.T) {
+	path := writeConfig(t, `
+autoaddann yes
+flood_protection_rate 9
+autoignore_time 30
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.AutoAddAnn || c.FloodProtectionRate != 9 || c.AutoIgnoreTime != 30 {
+		t.Fatalf("announce/flood = %+v", c)
+	}
+}
+
+func TestEnvAnnounceFlood(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ApplyEnvOverrides(&c, []string{
+		"IROFFER_AUTOADDANN=yes",
+		"IROFFER_FLOOD_PROTECTION_RATE=4",
+		"IROFFER_AUTOIGNORE_TIME=20",
+	})
+	if !c.AutoAddAnn || c.FloodProtectionRate != 4 || c.AutoIgnoreTime != 20 {
+		t.Fatalf("announce/flood env = %+v", c)
+	}
+}

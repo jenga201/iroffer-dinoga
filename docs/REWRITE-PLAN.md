@@ -230,14 +230,16 @@ iroffer-dinoga/
 ### 13. User / anti-abuse — KEEP
 
 - [x] hostmask allow/deny (`downloadhost`, `xdcc_allow`/`xdcc_deny`) via `internal/acl`
-- [ ] per-user limits (`max_downloads`, `maxtransfersperperson`, …)
-- [ ] flood protection, auto-ignore, `need_level` / `need_voice`
+- [x] per-user limits (`maxtransfersperperson`, `maxqueueitemsperperson`, `maxidlequeuedperperson`) via `internal/queue`
+- [x] flood protection + auto-ignore (`flood_protection_rate` / `autoignore_time`) via `internal/ratelimit`
+- [ ] `need_level` / `need_voice`
 - [ ] `restrictlist` / `restrictsend` / `restrictpriv*`
 
 ### 14. Announcements — KEEP
 
 - [x] `headline` (announce on join) + `periodicmsg`
-- [ ] `announce_*`, `autoaddann`
+- [x] `autoaddann` (announce newly-scanned packs to every network channel)
+- [ ] `announce_*` (size/date/separator formatting, per-channel `noannounce`)
 
 ### 15. Logging / stats — KEEP*
 

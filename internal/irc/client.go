@@ -28,6 +28,7 @@ import (
 	"github.com/jenga201/dinoga/internal/logging"
 	"github.com/jenga201/dinoga/internal/packs"
 	"github.com/jenga201/dinoga/internal/queue"
+	"github.com/jenga201/dinoga/internal/ratelimit"
 	"github.com/jenga201/dinoga/internal/sdcc"
 	"github.com/jenga201/dinoga/internal/sxdcc"
 	throttle "github.com/jenga201/dinoga/internal/transfer"
@@ -68,8 +69,9 @@ type Client struct {
 	cfg    config.Config
 	logger *logging.Logger
 
-	mu       sync.RWMutex // guards packlist + extras/descs/excluded
-	packlist []packs.Pack
+	mu        sync.RWMutex // guards packlist + extras/descs/excluded + firstScan
+	packlist  []packs.Pack
+	firstScan bool
 
 	extras   map[string]packs.Pack // runtime-added packs (addpack), keyed by path
 	descs    map[string]string     // pack descriptions (chdesc), keyed by path
@@ -99,6 +101,11 @@ type Client struct {
 
 	acl *acl.Matcher
 
+	flood *ratelimit.Limiter // nil = flood protection disabled
+
+	netMu sync.Mutex // guards nets
+	nets  []*netConn
+
 	globalTB *throttle.TokenBucket // overall transfer speed cap (nil = unlimited)
 }
 
@@ -119,9 +126,13 @@ func New(cfg config.Config, logger *logging.Logger) *Client {
 		pending:   map[string]*queueItem{},
 		q:         m,
 		acl:       acl.New(cfg.XDCCAllow, cfg.XDCCDeny),
+		firstScan: true,
 	}
 	if cfg.OverallMaxSpeed > 0 {
 		c.globalTB = throttle.NewTokenBucket(cfg.OverallMaxSpeed)
+	}
+	if cfg.FloodProtectionRate > 0 {
+		c.flood = ratelimit.New(cfg.FloodProtectionRate, floodWindow, time.Duration(cfg.AutoIgnoreTime)*time.Second)
 	}
 	return c
 }
@@ -147,6 +158,7 @@ func (c *Client) Run(ctx context.Context) error {
 
 	for _, net := range c.cfg.Networks {
 		nc := &netConn{c: c, net: net}
+		c.addNet(nc)
 		go nc.run(ctx)
 	}
 
@@ -387,6 +399,9 @@ func (nc *netConn) handlePrivmsg(sender, args string) {
 	}
 	if isDownload(message) && nc.c.acl != nil && !nc.c.acl.Empty() && !nc.c.acl.Allowed(sender) {
 		nc.Notice(from, "** You are not authorized to download from this bot **")
+		return
+	}
+	if isXDCCCommand(message) && nc.c.flood != nil && !nc.c.flood.Allow(sender) {
 		return
 	}
 	xdcc.Handle(nc, from, message)
@@ -631,10 +646,16 @@ func (c *Client) scan() error {
 		return err
 	}
 	c.mu.Lock()
+	prev := c.packlist
 	merged := c.mergeLocked(pl)
 	c.packlist = merged
+	first := c.firstScan
+	c.firstScan = false
 	c.mu.Unlock()
 	log.Printf("packlist: %d pack(s) from %s", len(merged), c.cfg.FileDir)
+	if !first && c.cfg.AutoAddAnn {
+		c.announceNew(prev, merged)
+	}
 	c.persist()
 	return nil
 }

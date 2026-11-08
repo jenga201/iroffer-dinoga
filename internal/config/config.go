@@ -99,24 +99,35 @@ type Config struct {
 	AddDirExclude    []string
 	AddDirMatch      []string
 	AddDirMinSize    int64 // bytes (0 = no minimum)
+
+	// Announce newly-added packs after each scan (autoaddann).
+	AutoAddAnn bool
+
+	// Flood protection: drop a user for AutoIgnoreTime seconds once they send
+	// more than FloodProtectionRate XDCC commands within a short window (0
+	// disables flood protection).
+	FloodProtectionRate int // 0 disables flood protection
+	AutoIgnoreTime      int // seconds a flooding user is ignored
 }
 
 // base returns the built-in defaults (no file).
 func base() Config {
 	return Config{
-		Server:         "irc.rizon.net",
-		Port:           6667,
-		Nick:           "dinoga",
-		Channel:        "#frog",
-		FileDir:        "/data",
-		PortStart:      30000,
-		PortLimit:      30001,
-		ControlPort:    0,
-		SlotsMax:       3,
-		QueueSize:      100,
-		IdleQueueSize:  50,
-		ReconnectDelay: 30,
-		LogStats:       true,
+		Server:              "irc.rizon.net",
+		Port:                6667,
+		Nick:                "dinoga",
+		Channel:             "#frog",
+		FileDir:             "/data",
+		PortStart:           30000,
+		PortLimit:           30001,
+		ControlPort:         0,
+		SlotsMax:            3,
+		QueueSize:           100,
+		IdleQueueSize:       50,
+		ReconnectDelay:      30,
+		FloodProtectionRate: 6,
+		AutoIgnoreTime:      10,
+		LogStats:            true,
 	}
 }
 

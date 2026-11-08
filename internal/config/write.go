@@ -69,6 +69,13 @@ func Write(w io.Writer, c Config) error {
 	if c.AddDirMinSize > 0 {
 		fmt.Fprintf(&b, "adddir_min_size %d\n", c.AddDirMinSize)
 	}
+	b.WriteString(boolLine("autoaddann", c.AutoAddAnn))
+	if c.FloodProtectionRate > 0 {
+		fmt.Fprintf(&b, "flood_protection_rate %d\n", c.FloodProtectionRate)
+	}
+	if c.AutoIgnoreTime > 0 {
+		fmt.Fprintf(&b, "autoignore_time %d\n", c.AutoIgnoreTime)
+	}
 
 	b.WriteString(boolLine("sxdcc_enable", c.SXDCCEnable))
 	if c.CertFile != "" {
@@ -170,10 +177,13 @@ const configHeader = `# dinoga config (generated)
 # adddir_exclude <glob>   skip matching files (repeatable)
 # adddir_match <glob>     only include matching files (repeatable)
 # adddir_min_size <bytes> skip smaller files
+# autoaddann yes          announce newly-added packs on rescan
 
 # --- access control (hostmasks nick!user@host) ---
 # xdcc_allow <mask>       allow-list (empty = allow all except deny)
 # xdcc_deny <mask>        deny-list (wins over allow)
+# flood_protection_rate <n>  max XDCC commands per user per window (0 = off)
+# autoignore_time <sec>      seconds a flooding user is ignored
 
 # --- DCC / SXDCC ---
 # usenatip <ip>           public IP advertised for DCC/SXDCC
