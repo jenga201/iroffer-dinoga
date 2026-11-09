@@ -8,6 +8,7 @@
 package sxdcc
 
 import (
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -59,14 +60,21 @@ func LoadOrCreateIdentity(certFile, keyFile, ip string) (*Identity, error) {
 // GenerateIdentity makes a new in-memory Ed25519 self-signed leaf cert with an
 // IP subjectAltName. It returns the identity but does not persist it.
 func GenerateIdentity(ip string) (*Identity, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	return RenewIdentity(priv, ip)
+}
+
+// RenewIdentity issues a self-signed leaf for ip SAN signed by priv, returning
+// the identity. Because the SPKI pin is the SHA-256 of the public key, renewing
+// the certificate around the same key keeps the pin unchanged (SXDCC.md §7.5),
+// so an advertised-IP change (e.g. VPN egress) does not break client TOFU.
+func RenewIdentity(priv crypto.Signer, ip string) (*Identity, error) {
 	addr := net.ParseIP(ip)
 	if addr == nil {
 		return nil, fmt.Errorf("sxdcc: invalid IP %q", ip)
-	}
-
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
 	}
 
 	template := &x509.Certificate{
@@ -79,7 +87,7 @@ func GenerateIdentity(ip string) (*Identity, error) {
 		IPAddresses:  []net.IP{addr},
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
+	der, err := x509.CreateCertificate(rand.Reader, template, template, priv.Public(), priv)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +106,19 @@ func GenerateIdentity(ip string) (*Identity, error) {
 		return nil, err
 	}
 	return &Identity{Cert: cert, Pin: pin}, nil
+}
+
+// ipSAN returns the identity's IP subjectAltName (from the parsed leaf, or by
+// parsing the certificate when the leaf is not populated on a loaded identity).
+func (id *Identity) ipSAN() (string, bool) {
+	leaf := id.Cert.Leaf
+	if leaf == nil {
+		leaf, _ = x509.ParseCertificate(id.Cert.Certificate[0])
+	}
+	if leaf == nil || len(leaf.IPAddresses) == 0 {
+		return "", false
+	}
+	return leaf.IPAddresses[0].String(), true
 }
 
 func writeIdentity(certFile, keyFile string, cert tls.Certificate) error {

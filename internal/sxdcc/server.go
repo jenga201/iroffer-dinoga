@@ -2,6 +2,7 @@ package sxdcc
 
 import (
 	"bufio"
+	"crypto"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -106,6 +107,14 @@ func New(host Host, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Seed the advertised IP from the loaded identity's IP SAN when present,
+	// so a restart behind a stable VPN egress (where cfg.IP is only a
+	// placeholder) does not count as an address change and re-issue the cert.
+	if san, ok := id.ipSAN(); ok {
+		if ip, ierr := dcc.IPToInt(san); ierr == nil {
+			advertiseIP = ip
+		}
+	}
 	s := &Server{
 		host:        host,
 		cfg:         cfg,
@@ -188,7 +197,14 @@ func (s *Server) SetAdvertise(ipStr string, port int) (bool, error) {
 
 	ipChanged := ipInt != s.advertiseIP
 	if ipChanged {
-		id, err := GenerateIdentity(ipStr)
+		// Renew the certificate around the SAME key so the SPKI pin stays put
+		// across advertised-IP changes (SXDCC.md §7.5); regenerating the key
+		// would churn the pin and break client TOFU.
+		priv, ok := s.id.Cert.PrivateKey.(crypto.Signer)
+		if !ok {
+			return false, errors.New("sxdcc: loaded key is not a signer")
+		}
+		id, err := RenewIdentity(priv, ipStr)
 		if err != nil {
 			return false, err
 		}

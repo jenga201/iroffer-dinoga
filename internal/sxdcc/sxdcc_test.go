@@ -2,6 +2,7 @@ package sxdcc
 
 import (
 	"bufio"
+	"crypto"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -45,6 +46,52 @@ func TestPinEqual(t *testing.T) {
 	}
 	if PinEqual("short", "longer-value") {
 		t.Fatal("PinEqual should be false for different lengths")
+	}
+}
+
+func TestRenewIdentityKeepsPin(t *testing.T) {
+	id, err := GenerateIdentity("1.2.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	origPin := id.Pin
+
+	renewed, err := RenewIdentity(id.Cert.PrivateKey.(crypto.Signer), "5.6.7.8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.Pin != origPin {
+		t.Fatalf("pin must not change across cert renewal: %q -> %q", origPin, renewed.Pin)
+	}
+	if len(renewed.Cert.Leaf.IPAddresses) != 1 || renewed.Cert.Leaf.IPAddresses[0].String() != "5.6.7.8" {
+		t.Fatalf("renewed SAN = %v, want [5.6.7.8]", renewed.Cert.Leaf.IPAddresses)
+	}
+}
+
+func TestSetAdvertiseKeepsPin(t *testing.T) {
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "c.pem")
+	keyFile := filepath.Join(dir, "k.pem")
+	id, err := GenerateIdentity("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeIdentity(certFile, keyFile, id.Cert); err != nil {
+		t.Fatal(err)
+	}
+	oldPin := id.Pin
+
+	s := &Server{
+		cfg:         Config{CertFile: certFile, KeyFile: keyFile},
+		id:          id,
+		advertiseIP: 2130706433, // 127.0.0.1
+	}
+	// IP change (e.g. new VPN egress) renews the cert but keeps the key/pin.
+	if _, err := s.SetAdvertise("10.0.0.1", 30000); err != nil {
+		t.Fatal(err)
+	}
+	if s.Pin() != oldPin {
+		t.Fatalf("pin must survive SetAdvertise: %q -> %q", oldPin, s.Pin())
 	}
 }
 
