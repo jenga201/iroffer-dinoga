@@ -115,6 +115,9 @@ func Write(w io.Writer, c Config) error {
 	}
 
 	b.WriteString(boolLine("sxdcc_enable", c.SXDCCEnable))
+	if !c.XDCCEnable {
+		b.WriteString(boolLine("xdcc_enable", c.XDCCEnable))
+	}
 	if c.CertFile != "" {
 		fmt.Fprintf(&b, "sxdcc_cert %s\n", c.CertFile)
 	}
@@ -253,6 +256,7 @@ const configHeader = `# dinoga config (generated)
 # tcp_nodelay yes         set TCP_NODELAY on transfer/chat sockets
 # tcp_buffer_size <KB>    SO_SNDBUF/SO_RCVBUF (0 = OS default)
 # sxdcc_enable yes        serve XDCC over TLS 1.3
+# xdcc_enable no          disable classic cleartext XDCC/DCC (single-port/VPN)
 # sxdcc_cert <path>       TLS certificate (self-signed generated if missing)
 # sxdcc_key <path>        TLS private key
 

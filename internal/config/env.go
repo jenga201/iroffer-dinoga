@@ -149,6 +149,10 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 		c.SXDCCEnable = yesNo(v, c.SXDCCEnable)
 		apply("sxdcc_enable", v)
 	}
+	if v, ok := get(env, "xdcc_enable"); ok && v != "" {
+		c.XDCCEnable = yesNo(v, c.XDCCEnable)
+		apply("xdcc_enable", v)
+	}
 	if v, ok := get(env, "sxdcc_cert"); ok && v != "" {
 		c.CertFile = strings.TrimSpace(v)
 		apply("sxdcc_cert", v)

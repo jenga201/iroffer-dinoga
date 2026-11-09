@@ -53,6 +53,8 @@ original-dinoex/    upstream C source (git submodule)
 config/             runtime volume (dinoga.config, certs, wireguard state)
 root/               hotio/base s6-overlay services + PIA region picker
 docs/               REWRITE-PLAN.md, IMPLEMENTATION-SUMMARY.md
+sample.config       drop-in config example (for running without Docker)
+Dockerfile / docker-compose.yml / .env.example
 ```
 
 ## Configuration
@@ -69,7 +71,17 @@ Flags:
 - `--tui` — interactive admin console on stdin (no password).
 
 The directive surface mirrors the C bot's `iroffer.config` (pruned to what's
-implemented). See `--print-config` and `.env.example`.
+implemented). See `--print-config`, `.env.example`, and `sample.config` (a
+concise non-Docker example).
+
+### Serve modes
+
+- **SXDCC + XDCC**: `sxdcc_enable yes` + `xdcc_enable yes`, with `control_port`
+  (SXDCC/SDCC/HTTP) and a disjoint `tcprangestart–tcprangelimit` (classic DCC),
+  all ports reachable.
+- **SXDCC only** (single forwarded port / VPN): `sxdcc_enable yes` +
+  `xdcc_enable no`; classic `xdcc` is rejected and only the shared `control_port`
+  needs to be reachable.
 
 ## Build & run
 

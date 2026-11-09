@@ -429,6 +429,10 @@ func (nc *netConn) handlePrivmsg(sender, args string) {
 		nc.handleSXDCC(from, message)
 		return
 	}
+	if isXDCCCommand(message) && !nc.c.cfg.XDCCEnable {
+		nc.Notice(from, "** XDCC is disabled; use SXDCC (sxdcc list/send) **")
+		return
+	}
 	if isDownload(message) && nc.c.acl != nil && !nc.c.acl.Empty() && !nc.c.acl.Allowed(sender) {
 		nc.Notice(from, "** You are not authorized to download from this bot **")
 		return

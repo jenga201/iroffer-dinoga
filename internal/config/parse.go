@@ -146,6 +146,8 @@ func applyFile(c *Config, path string) error {
 			c.AdminPass = value
 		case "sxdcc_enable":
 			c.SXDCCEnable = yesNo(value, c.SXDCCEnable)
+		case "xdcc_enable":
+			c.XDCCEnable = yesNo(value, c.XDCCEnable)
 		case "sxdcc_cert":
 			c.CertFile = value
 		case "sxdcc_key":

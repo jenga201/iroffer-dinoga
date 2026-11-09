@@ -161,6 +161,7 @@ iroffer-dinoga/
 - [x] `XDCC REMOVE` / `CANCEL`
 - [x] pack descriptions (no release-group grouping; `xdcclist_grouponly` is DROP) — shown inline in `LIST` and `INFO`
 - [x] `xdcclistfile` / `xdccxmlfile` export (plain-text + XML, written after each scan/persist)
+- [x] `xdcc_enable` toggle — `no` disables classic XDCC/DCC for single-port/VPN (SXDCC-only) deployments
 
 ### 3. DCC transfer engine — KEEP ✅
 
@@ -306,6 +307,7 @@ Spec: `IRC/dcc-protocol/SXDCC.md`.
 ### 24. Config template flag — ADD
 
 - [x] `--print-config` prints a template `iroffer.config` to stdout
+- [x] `sample.config` — concise drop-in config for non-Docker users (both serve modes)
 
 ### 25. Password hash flag — ADD
 

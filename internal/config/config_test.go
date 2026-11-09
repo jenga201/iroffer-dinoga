@@ -498,6 +498,25 @@ func TestEnvParityOverrides(t *testing.T) {
 	}
 }
 
+func TestXDCCEnable(t *testing.T) {
+	c, _ := Load("")
+	if !c.XDCCEnable {
+		t.Fatal("xdcc_enable should default to true")
+	}
+	path := writeConfig(t, "xdcc_enable no\n")
+	c2, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.XDCCEnable {
+		t.Fatal("xdcc_enable no should disable classic XDCC")
+	}
+	ApplyEnvOverrides(&c2, []string{"IROFFER_XDCC_ENABLE=yes"})
+	if !c2.XDCCEnable {
+		t.Fatal("IROFFER_XDCC_ENABLE=yes should re-enable")
+	}
+}
+
 func TestEnvAnnounceFlood(t *testing.T) {
 	c, err := Load("")
 	if err != nil {

@@ -76,6 +76,11 @@ type Config struct {
 	CertFile    string
 	KeyFile     string
 
+	// XDCCEnable toggles classic cleartext XDCC/DCC (xdcc list/send/... plus the
+	// DCC transfer engine). Disable it in single-port/VPN deployments so the bot
+	// serves only SXDCC/SDCC/HTTP on the control port (xdcc_enable, default yes).
+	XDCCEnable bool
+
 	Headline         string // announced to the channel on join
 	PeriodicMsg      string // periodic channel message
 	PeriodicInterval int    // seconds between periodic messages (0 = disabled)
@@ -169,6 +174,7 @@ func base() Config {
 		AutoIgnoreTime:      10,
 		LogStats:            true,
 		StatusInterval:      120,
+		XDCCEnable:          true,
 	}
 }
 

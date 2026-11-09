@@ -43,9 +43,13 @@ func (c *Client) broadcast(msg string) {
 // announceNew broadcasts a notice for each pack in next that is not in prev
 // (autoaddann). announce_size/announce_date add size/date to the line.
 func (c *Client) announceNew(prev, next []packs.Pack) {
+	verb := "XDCC SEND"
+	if !c.cfg.XDCCEnable {
+		verb = "SXDCC SEND"
+	}
 	for _, p := range newPacks(prev, next) {
-		c.broadcast(fmt.Sprintf("** New pack #%d: %s%s - /MSG %s XDCC SEND #%d **",
-			p.Number, p.Name, c.announceExtras(p), c.cfg.Nick, p.Number))
+		c.broadcast(fmt.Sprintf("** New pack #%d: %s%s - /MSG %s %s #%d **",
+			p.Number, p.Name, c.announceExtras(p), c.cfg.Nick, verb, p.Number))
 	}
 }
 
