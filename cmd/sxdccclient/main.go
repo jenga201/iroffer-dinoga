@@ -30,6 +30,8 @@ func main() {
 	bot := flag.String("bot", "dinoga", "SXDCC bot nick")
 	pack := flag.Int("pack", 0, "pack number to download (0 = LIST only)")
 	downloadDir := flag.String("download", ".", "download directory")
+	owner := flag.Bool("owner", false, "query OWNER and exit")
+	cancel := flag.Bool("cancel", false, "SEND then CANCEL (needs -pack); verifies the transfer is removed")
 	flag.Parse()
 
 	rv, err := discover(*server, *port, *ircSSL, *nick, *channel, *bot)
@@ -46,6 +48,22 @@ func main() {
 
 	if err := authed(ctl, rv.token); err != nil {
 		fatalf("auth: %v", err)
+	}
+
+	if *owner {
+		if err := ownerCmd(ctl); err != nil {
+			fatalf("owner: %v", err)
+		}
+		return
+	}
+	if *cancel {
+		if *pack == 0 {
+			fatalf("--cancel requires --pack <n>")
+		}
+		if err := cancelCmd(ctl, rv.pin, *pack); err != nil {
+			fatalf("cancel: %v", err)
+		}
+		return
 	}
 
 	if *pack == 0 {
@@ -341,6 +359,73 @@ func parseOffer(line string) (offer, error) {
 		return offer{}, err
 	}
 	return offer{pack: pack, size: size, name: name, ip: dcc.IPFromInt(uint32(ipInt)), port: port, datatoken: f[6]}, nil
+}
+
+// ownerCmd sends OWNER and prints the reply.
+func ownerCmd(ctl *lineConn) error {
+	if err := ctl.write("OWNER"); err != nil {
+		return err
+	}
+	line, err := ctl.read()
+	if err != nil {
+		return err
+	}
+	fmt.Println(line)
+	return nil
+}
+
+// cancelCmd sends SEND, parses the offer, sends CANCEL, and verifies a late DATA
+// is rejected (proving the transfer was removed).
+func cancelCmd(ctl *lineConn, pin string, pack int) error {
+	if err := ctl.write(fmt.Sprintf("SEND %d", pack)); err != nil {
+		return err
+	}
+	var off *offer
+	for {
+		line, err := ctl.read()
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(line, "ERR ") {
+			return fmt.Errorf("send: %s", line)
+		}
+		if strings.HasPrefix(line, "SEND ") {
+			o, err := parseOffer(line)
+			if err != nil {
+				return err
+			}
+			off = &o
+			break
+		}
+	}
+
+	if err := ctl.write("CANCEL"); err != nil {
+		return err
+	}
+	line, err := ctl.read()
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(line, "OK") {
+		return fmt.Errorf("cancel reply: %s", line)
+	}
+	fmt.Printf("cancel: %s (offered #%d)\n", strings.TrimSpace(line), off.pack)
+
+	// A late DATA on the offered token must now be rejected.
+	dconn, err := dialTLS(off.addr(), pin)
+	if err != nil {
+		return fmt.Errorf("data dial after cancel: %v", err)
+	}
+	defer dconn.Close()
+	if err := dconn.write("DATA " + off.datatoken); err != nil {
+		return err
+	}
+	late, err := dconn.read()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("data after cancel: %s\n", late)
+	return nil
 }
 
 func (o offer) addr() string {
