@@ -210,9 +210,8 @@ iroffer-dinoga/
 
 ### 9. Config system — KEEP* / PRUNE (partial)
 
-- [x] Real `iroffer.config` file parser (the bot's only config source; no env)
-- [x] Multi-`network { … }` blocks + formerly env-only directives (`usenatip`, `tcprangestart/limit`, `passive_dcc`, `autoadd_*`, `sxdcc_*`, `headline`, `periodicmsg*`, `uploaddir`, http)
-- [ ] Env→config translation — deferred to the Docker container entrypoint
+- [x] Real `iroffer.config` file parser (config-file-first), plus in-binary `IROFFER_*` env overlay (env wins; no container-side translation needed)
+- [x] Multi-`network { … }` blocks + formerly env-only directives (`usenatip`, `tcprangestart/limit`, `passive_dcc`, `autoadd_*`, `sxdcc_*`, `headline`, `periodicmsg*`, `uploaddir`, http, `tcp_*`, `restrict*`, `need_*`, `announce_*`, `status_time_dcc_chat`, `old_statefile` …)
 - [ ] Prune unneeded directives
 
 ### 10. State persistence — KEEP
