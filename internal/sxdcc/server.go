@@ -233,10 +233,10 @@ func (s *Server) SetControlPort(port int) {
 }
 
 // SetAdvertise updates the public address advertised to clients. When ipStr
-// differs from the current advertised IP, a fresh SXDCC identity (self-signed
-// cert with an IP subjectAltName + new SPKI pin) is generated and persisted, so
-// the advertised IP always has a matching pin. It reports whether the identity
-// (and therefore the pin) changed.
+// differs from the current advertised IP, the self-signed leaf is re-issued for
+// the new IP subjectAltName around the SAME key, so the advertised IP always has
+// a matching cert while the SPKI pin stays put (SXDCC.md §7.5). It reports
+// whether the advertised IP changed (i.e. the cert was renewed).
 func (s *Server) SetAdvertise(ipStr string, port int) (bool, error) {
 	ipInt, err := dcc.IPToInt(ipStr)
 	if err != nil {

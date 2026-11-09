@@ -1443,7 +1443,7 @@ func (c *Client) applyVPNAddress(addr vpn.Address) {
 	if c.sxdcc == nil || c.sdcc == nil {
 		return
 	}
-	pinChanged, err := c.sxdcc.SetAdvertise(addr.IP, addr.Port)
+	renewed, err := c.sxdcc.SetAdvertise(addr.IP, addr.Port)
 	if err != nil {
 		log.Printf("vpn: SetAdvertise %v: %v", addr, err)
 		return
@@ -1452,7 +1452,8 @@ func (c *Client) applyVPNAddress(addr vpn.Address) {
 		c.sdcc.SetAdvertise(ipInt, addr.Port, c.sxdcc.Pin())
 	}
 	c.setAdvertise(addr.IP, addr.Port)
-	log.Printf("vpn: advertised address %s:%d (pin changed: %v)", addr.IP, addr.Port, pinChanged)
+	log.Printf("vpn: advertised address %s:%d (cert %s; pin %s)", addr.IP, addr.Port,
+		map[bool]string{true: "renewed for new IP", false: "unchanged"}[renewed], c.sxdcc.Pin())
 }
 
 func (c *Client) startWeb() error {
