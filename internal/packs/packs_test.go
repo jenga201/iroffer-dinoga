@@ -40,6 +40,26 @@ func TestScanNumbersAndSorts(t *testing.T) {
 	}
 }
 
+func TestSizeString(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0"},
+		{512, "<1k"},
+		{1024, "1K"},
+		{939 * 1024 * 1024, "939M"},
+		{9 * 1024 * 1024, "9.0M"},
+		{1024 * 1024 * 1024, "1.0G"},
+		{1181116006, "1.1G"}, // ≈1.1 GiB
+	}
+	for _, c := range cases {
+		if got := SizeString(c.in); got != c.want {
+			t.Errorf("SizeString(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestNaturalSort(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{"file2.bin", "file10.bin", "file1.bin"} {
