@@ -1,16 +1,17 @@
 package config
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
 
 // ApplyEnvOverrides overlays IROFFER_* environment variables onto c, replacing
 // any file-provided value (env wins). It returns a description of each applied
-// override ("<directive>=<value>") in a stable, sorted order, for startup
-// INFO logging. Only globally-scoped directives are applied here; per-network
-// IROFFER_NETWORK_<n>_* overrides are intentionally not handled (network blocks
-// are authored in the config file).
+// override ("<directive>=<value>") in a stable order, for startup INFO logging.
+// In addition to globally-scoped directives, IROFFER_NETWORK_COUNT +
+// IROFFER_NETWORK_<n>_<DIRECTIVE> regenerate the network blocks (so nick /
+// server / channel can differ per instance while the config file stays shared).
 func ApplyEnvOverrides(c *Config, environ []string) []string {
 	env := environMap(environ)
 
@@ -35,6 +36,10 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 		// filedir is a single directory in dinoga; take the first entry.
 		c.FileDir = firstMulti(v)
 		apply("filedir", v)
+	} else if v, ok := get(env, "autoadd_dir"); ok && v != "" {
+		// legacy alias for filedir.
+		c.FileDir = firstMulti(v)
+		apply("autoadd_dir", v)
 	}
 	if v, ok := get(env, "autoadd_time"); ok && v != "" {
 		c.AutoAdd = atoiOr(v, c.AutoAdd)
@@ -294,7 +299,74 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 		apply("autoignore_time", v)
 	}
 
+	applied = append(applied, applyNetworkOverrides(c, env)...)
 	return applied
+}
+
+// applyNetworkOverrides rebuilds c.Networks from IROFFER_NETWORK_COUNT and the
+// IROFFER_NETWORK_<n>_<DIRECTIVE> variables, letting an instance's nick/server/
+// channel live in .env while the config file stays shared. It returns the
+// applied override descriptions.
+func applyNetworkOverrides(c *Config, env map[string]string) []string {
+	count := 0
+	if v, ok := env["IROFFER_NETWORK_COUNT"]; ok {
+		count = atoiOr(v, 0)
+	}
+	if count <= 0 {
+		return nil
+	}
+
+	var applied []string
+	nets := make([]Network, count)
+	for i := range nets {
+		n := i + 1
+		nets[i] = Network{Port: 6667}
+		pre := fmt.Sprintf("IROFFER_NETWORK_%d_", n)
+		set := func(key, val string) { applied = append(applied, fmt.Sprintf("network_%d_%s=%s", n, key, val)) }
+
+		if v, ok := env[pre+"NAME"]; ok {
+			nets[i].Name = strings.TrimSpace(v)
+			set("name", v)
+		}
+		if v, ok := env[pre+"SERVER"]; ok {
+			nets[i].Server, nets[i].Port = splitServerSpec(v, "", 6667)
+			set("server", v)
+		}
+		if v, ok := env[pre+"CONNECTIONMETHOD"]; ok {
+			nets[i].SSL = strings.EqualFold(strings.TrimSpace(v), "ssl")
+			set("connectionmethod", v)
+		}
+		if v, ok := netVar(env, pre, "USER_NICK", "USERNAME"); ok {
+			nets[i].Nick = v
+			set("user_nick", v)
+		}
+		if v, ok := env[pre+"CHANNEL"]; ok {
+			nets[i].Channel, nets[i].Key, nets[i].NoAnnounce = splitChannelSpec(v)
+			set("channel", v)
+		}
+		if v, ok := netVar(env, pre, "SASL_USERNAME", "SASL_USER"); ok {
+			nets[i].SASLUser = v
+			set("sasl_username", v)
+		}
+		if v, ok := netVar(env, pre, "SASL_PASSWORD", "SASL_PASS"); ok {
+			nets[i].SASLPass = v
+			set("sasl_password", v)
+		}
+	}
+	c.Networks = nets
+	*c = ensureNetworks(*c)
+	return applied
+}
+
+// netVar returns the first non-empty IROFFER_NETWORK_<n>_<name> variable among
+// the given alternative names.
+func netVar(env map[string]string, prefix string, names ...string) (string, bool) {
+	for _, name := range names {
+		if v, ok := env[prefix+name]; ok && v != "" {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 func environMap(environ []string) map[string]string {

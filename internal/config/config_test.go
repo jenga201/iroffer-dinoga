@@ -517,6 +517,42 @@ func TestXDCCEnable(t *testing.T) {
 	}
 }
 
+func TestEnvNetworkOverrides(t *testing.T) {
+	// Start from a shared config file with a default network.
+	path := writeConfig(t, "network {\n  server irc.rizon.net 9999\n  user_nick dinoga\n  channel #frog\n  connectionmethod ssl\n}\nfiledir /data\n")
+	c, _, err := LoadWithEnv(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Nick != "dinoga" {
+		t.Fatalf("default nick = %q", c.Nick)
+	}
+
+	// Instance-specific network override (as in the local VPN .env).
+	c2, applied, err := LoadWithEnv(path, []string{
+		"IROFFER_NETWORK_COUNT=1",
+		"IROFFER_NETWORK_1_NAME=rizon",
+		"IROFFER_NETWORK_1_SERVER=irc.rizon.net 9999",
+		"IROFFER_NETWORK_1_CONNECTIONMETHOD=ssl",
+		"IROFFER_NETWORK_1_USER_NICK=dinoga-vpn",
+		"IROFFER_NETWORK_1_CHANNEL=#frog",
+		"IROFFER_XDCC_ENABLE=no",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := c2.Networks[0]
+	if n.Name != "rizon" || n.Nick != "dinoga-vpn" || n.Channel != "#frog" || !n.SSL {
+		t.Fatalf("network override = %+v", n)
+	}
+	if c2.Nick != "dinoga-vpn" || c2.XDCCEnable {
+		t.Fatalf("mirror/env = nick %q xdcc %v", c2.Nick, c2.XDCCEnable)
+	}
+	if len(applied) == 0 {
+		t.Fatal("expected applied overrides")
+	}
+}
+
 func TestEnvAnnounceFlood(t *testing.T) {
 	c, err := Load("")
 	if err != nil {
