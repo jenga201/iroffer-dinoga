@@ -228,6 +228,24 @@ func TestLoggerMessageFallsBackToMain(t *testing.T) {
 	}
 }
 
+func TestLoggerNoLogFile(t *testing.T) {
+	// No logfile configured: the logger must tolerate nil rotating writers
+	// (console only) without a typed-nil panic.
+	l, err := New(config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	l.console = io.Discard
+
+	for i := 0; i < 3; i++ {
+		l.Write([]byte("op"))
+		l.Message("msg")
+		l.Notice("ntc")
+		l.Mainf("Stat: ok")
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

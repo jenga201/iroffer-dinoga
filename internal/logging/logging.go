@@ -265,8 +265,8 @@ func (l *Logger) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	line := []byte(l.line(strings.TrimRight(string(p), "\r\n")))
-	l.writeTo(l.console, line)
-	l.writeTo(l.main, line)
+	_, _ = l.console.Write(line)
+	l.writeFile(l.main, line)
 	return len(p), nil
 }
 
@@ -274,14 +274,14 @@ func (l *Logger) Write(p []byte) (int, error) {
 func (l *Logger) Message(text string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.writeTo(l.messages, []byte(l.line(text)))
+	l.writeFile(l.messages, []byte(l.line(text)))
 }
 
 // Notice writes an incoming NOTICE transcript line to the notice log.
 func (l *Logger) Notice(text string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.writeTo(l.notices, []byte(l.line(text)))
+	l.writeFile(l.notices, []byte(l.line(text)))
 }
 
 // Mainf writes a formatted line to the main log file only (not the console),
@@ -289,14 +289,18 @@ func (l *Logger) Notice(text string) {
 func (l *Logger) Mainf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.writeTo(l.main, []byte(l.line(fmt.Sprintf(format, args...))))
+	l.writeFile(l.main, []byte(l.line(fmt.Sprintf(format, args...))))
 }
 
 func (l *Logger) line(text string) string {
 	return fmt.Sprintf("** %s: %s\n", l.now().Format(timestampLayout), text)
 }
 
-func (l *Logger) writeTo(w io.Writer, line []byte) {
+// writeFile appends line to a rotating log, tolerating a nil writer (the log is
+// simply not configured). The concrete pointer type keeps the nil check honest:
+// a nil *RotatingWriter passed as io.Writer would otherwise be a non-nil
+// interface and dereference nil.
+func (l *Logger) writeFile(w *RotatingWriter, line []byte) {
 	if w == nil {
 		return
 	}
