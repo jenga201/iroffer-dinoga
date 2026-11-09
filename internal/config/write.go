@@ -17,7 +17,9 @@ func Write(w io.Writer, c Config) error {
 		b.WriteString("network {\n")
 		fmt.Fprintf(&b, "  server %s %d\n", n.Server, n.Port)
 		fmt.Fprintf(&b, "  user_nick %s\n", n.Nick)
-		fmt.Fprintf(&b, "  channel %s\n", n.Channel)
+		fmt.Fprintf(&b, "  channel %s%s%s\n", n.Channel,
+			boolSuffix(" -key ", n.Key != "", n.Key),
+			boolSuffix(" -noannounce", n.NoAnnounce, ""))
 		if n.SSL {
 			b.WriteString("  connectionmethod ssl\n")
 		}
@@ -70,6 +72,41 @@ func Write(w io.Writer, c Config) error {
 		fmt.Fprintf(&b, "adddir_min_size %d\n", c.AddDirMinSize)
 	}
 	b.WriteString(boolLine("autoaddann", c.AutoAddAnn))
+	b.WriteString(boolLine("nat_sort", c.NaturalSort))
+	b.WriteString(boolLine("nocrc32", c.NoCRC32))
+	b.WriteString(boolLine("nomd5sum", c.NoMD5Sum))
+	if c.XDCCListFile != "" {
+		fmt.Fprintf(&b, "xdcclistfile %s\n", c.XDCCListFile)
+	}
+	if c.XDCCXMLFile != "" {
+		fmt.Fprintf(&b, "xdccxmlfile %s\n", c.XDCCXMLFile)
+	}
+	if c.TCPNoDelay {
+		b.WriteString(boolLine("tcp_nodelay", c.TCPNoDelay))
+	}
+	if c.TCPBufferSize > 0 {
+		fmt.Fprintf(&b, "tcp_buffer_size %d\n", c.TCPBufferSize/1024)
+	}
+	for _, d := range c.UploadAllow {
+		fmt.Fprintf(&b, "uploadhost %s\n", d)
+	}
+	if c.UploadMinSpace > 0 {
+		fmt.Fprintf(&b, "uploadminspace %d\n", c.UploadMinSpace/(1024*1024))
+	}
+	b.WriteString(boolLine("restrictlist", c.RestrictList))
+	b.WriteString(boolLine("restrictsend", c.RestrictSend))
+	b.WriteString(boolLine("need_voice", c.NeedVoice))
+	if c.NeedLevel > 0 {
+		fmt.Fprintf(&b, "need_level %d\n", c.NeedLevel)
+	}
+	b.WriteString(boolLine("announce_size", c.AnnounceSize))
+	b.WriteString(boolLine("announce_date", c.AnnounceDate))
+	if c.StatusInterval > 0 {
+		fmt.Fprintf(&b, "status_time_dcc_chat %d\n", c.StatusInterval)
+	}
+	if c.OldStateFile != "" {
+		fmt.Fprintf(&b, "old_statefile %s\n", c.OldStateFile)
+	}
 	if c.FloodProtectionRate > 0 {
 		fmt.Fprintf(&b, "flood_protection_rate %d\n", c.FloodProtectionRate)
 	}
@@ -141,6 +178,15 @@ func yesNoText(v bool) string {
 	return "no"
 }
 
+// boolSuffix returns prefix+val when cond is true, otherwise "" (for optional
+// inline channel flags such as `-key <k>` and `-noannounce`).
+func boolSuffix(prefix string, cond bool, val string) string {
+	if !cond {
+		return ""
+	}
+	return prefix + val
+}
+
 func orInt(v, def int) int {
 	if v == 0 {
 		return def
@@ -178,12 +224,25 @@ const configHeader = `# dinoga config (generated)
 # adddir_match <glob>     only include matching files (repeatable)
 # adddir_min_size <bytes> skip smaller files
 # autoaddann yes          announce newly-added packs on rescan
+# announce_size yes       include size in the autoaddann announce
+# announce_date yes       include date in the autoaddann announce
+# nat_sort yes            natural (strnatcmp-style) listing order
+# nocrc32 yes             suppress CRC32 in "xdcc info"
+# nomd5sum yes            suppress MD5 in "xdcc info"
+# xdcclistfile <path>     write a plain-text pack list after each scan
+# xdccxmlfile <path>      write an XML pack list after each scan
 
 # --- access control (hostmasks nick!user@host) ---
 # xdcc_allow <mask>       allow-list (empty = allow all except deny)
 # xdcc_deny <mask>        deny-list (wins over allow)
 # flood_protection_rate <n>  max XDCC commands per user per window (0 = off)
 # autoignore_time <sec>      seconds a flooding user is ignored
+# uploadhost <mask>       hostmask allowed to upload (empty = allow all)
+# uploadminspace <MiB>    min free disk space to accept an upload (0 = none)
+# restrictlist yes        only channel members may xdcc list/info
+# restrictsend yes        only channel members may xdcc send/batch
+# need_voice yes          + also require voice or higher (needs restrictsend)
+# need_level <n>          + require level 1=voice 2=halfop 3=op (needs restrictsend)
 
 # --- DCC / SXDCC ---
 # usenatip <ip>           public IP advertised for DCC/SXDCC
@@ -191,6 +250,8 @@ const configHeader = `# dinoga config (generated)
 # tcprangestart <port>    first DCC/TLS port (used when control_port is 0)
 # tcprangelimit <port>    last DCC/TLS port
 # passive_dcc yes         reverse DCC (bot connects out)
+# tcp_nodelay yes         set TCP_NODELAY on transfer/chat sockets
+# tcp_buffer_size <KB>    SO_SNDBUF/SO_RCVBUF (0 = OS default)
 # sxdcc_enable yes        serve XDCC over TLS 1.3
 # sxdcc_cert <path>       TLS certificate (self-signed generated if missing)
 # sxdcc_key <path>        TLS private key
@@ -207,6 +268,8 @@ const configHeader = `# dinoga config (generated)
 # periodicmsg <msg>       periodic channel message
 # periodicmsg_time <sec>  seconds between periodic messages
 # statefile <path>
+# old_statefile <path>    rolling backup of the previous statefile
+# status_time_dcc_chat <sec>  status/logstats interval (default 120)
 # logfile <path>
 # logrotate <v>           rotation: never/daily/weekly/monthly/<N> hours
 # expire_logfiles <days>  delete rotated logs older than N days (0 = keep)

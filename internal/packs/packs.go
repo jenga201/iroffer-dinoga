@@ -308,6 +308,11 @@ func fileHashes(path string) (string, uint32, error) {
 	return fmt.Sprintf("%x", md5h.Sum(nil)), crc32h.Sum32(), nil
 }
 
+// Less reports whether a sorts before b using the natural (strnatcmp-style)
+// ordering. It is exported so callers that merge and re-sort a scanned listing
+// (the IRC front-end) can use the exact same order as Scan's WithNaturalSort.
+func Less(a, b string) bool { return naturalLess(a, b) }
+
 // naturalLess implements a strnatcmp-style ordering: runs of digits compare
 // numerically (leading zeros ignored, with fewer leading zeros first on ties),
 // and everything else compares case-insensitively with a byte-order tiebreak.

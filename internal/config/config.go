@@ -25,6 +25,10 @@ type Network struct {
 	// SASLUser defaults to Nick when empty (the common NickServ case).
 	SASLUser string
 	SASLPass string
+
+	// NoAnnounce silences this channel's announcements (headline/periodic/
+	// autoaddann). It is the `channel #chan -noannounce` flag.
+	NoAnnounce bool
 }
 
 // Config is the runtime configuration for the bot. The Server/Port/SSL/Nick/
@@ -103,6 +107,42 @@ type Config struct {
 	// Announce newly-added packs after each scan (autoaddann).
 	AutoAddAnn bool
 
+	// NaturalSort orders the pack listing with strnatcmp-style ordering (nat_sort).
+	NaturalSort bool
+	// NoCRC32 suppresses CRC32 advertisement in "xdcc info" (nocrc32).
+	NoCRC32 bool
+	// NoMD5Sum suppresses MD5 advertisement in "xdcc info" (nomd5sum).
+	NoMD5Sum bool
+	// XDCCListFile is an optional plain-text pack list written after each scan
+	// (xdcclistfile). Empty = disabled.
+	XDCCListFile string
+	// XDCCXMLFile is an optional XML pack list written after each scan
+	// (xdccxmlfile). Empty = disabled.
+	XDCCXMLFile string
+
+	// TCP socket tuning.
+	TCPNoDelay    bool  // tcp_nodelay: set TCP_NODELAY on transfer/chat sockets
+	TCPBufferSize int64 // tcp_buffer_size: SO_SNDBUF/SO_RCVBUF in KB (0 = OS default)
+
+	// Upload access control.
+	UploadAllow    []string // uploadhost: hostmasks allowed to upload (empty = all)
+	UploadMinSpace int64    // uploadminspace: min free MiB on uploaddir (bytes; 0 = none)
+
+	// Channel-mode download gating (need_voice/need_level refine restrict*,
+	// which must be set to take effect — matching upstream).
+	RestrictList bool // restrictlist: only channel members may xdcc list/info
+	RestrictSend bool // restrictsend: only channel members may xdcc send/batch
+	NeedVoice    bool // need_voice: require +v or higher to download
+	NeedLevel    int  // need_level: 0=none, 1=voice, 2=halfop, 3=op
+
+	// Announcement formatting.
+	AnnounceSize bool // announce_size: include size in autoaddann announce
+	AnnounceDate bool // announce_date: include date in autoaddann announce
+
+	// Status / persistence.
+	StatusInterval int    // status_time_dcc_chat: status line interval in seconds
+	OldStateFile   string // old_statefile: rolling backup of the previous statefile
+
 	// Flood protection: drop a user for AutoIgnoreTime seconds once they send
 	// more than FloodProtectionRate XDCC commands within a short window (0
 	// disables flood protection).
@@ -128,6 +168,7 @@ func base() Config {
 		FloodProtectionRate: 6,
 		AutoIgnoreTime:      10,
 		LogStats:            true,
+		StatusInterval:      120,
 	}
 }
 
@@ -189,12 +230,22 @@ func splitServerSpec(spec, defHost string, defPort int) (string, int) {
 	return host, port
 }
 
-func splitChannelSpec(spec string) (string, string) {
-	channel := strings.TrimSpace(spec)
-	key := ""
-	if i := strings.Index(spec, " -key "); i >= 0 {
-		channel = strings.TrimSpace(spec[:i])
-		key = strings.TrimSpace(spec[i+len(" -key "):])
+func splitChannelSpec(spec string) (channel, key string, noannounce bool) {
+	fields := strings.Fields(spec)
+	if len(fields) == 0 {
+		return "", "", false
 	}
-	return channel, key
+	channel = fields[0]
+	for i := 1; i < len(fields); i++ {
+		switch fields[i] {
+		case "-noannounce":
+			noannounce = true
+		case "-key":
+			if i+1 < len(fields) {
+				key = fields[i+1]
+				i++
+			}
+		}
+	}
+	return channel, key, noannounce
 }

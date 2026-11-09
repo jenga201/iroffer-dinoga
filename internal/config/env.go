@@ -211,6 +211,76 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 		c.AutoAddAnn = yesNo(v, c.AutoAddAnn)
 		apply("autoaddann", v)
 	}
+	if v, ok := get(env, "nat_sort"); ok && v != "" {
+		c.NaturalSort = yesNo(v, c.NaturalSort)
+		apply("nat_sort", v)
+	}
+	if v, ok := get(env, "nocrc32"); ok && v != "" {
+		c.NoCRC32 = yesNo(v, c.NoCRC32)
+		apply("nocrc32", v)
+	}
+	if v, ok := get(env, "nomd5sum"); ok && v != "" {
+		c.NoMD5Sum = yesNo(v, c.NoMD5Sum)
+		apply("nomd5sum", v)
+	}
+	if v, ok := get(env, "xdcclistfile"); ok && v != "" {
+		c.XDCCListFile = strings.TrimSpace(v)
+		apply("xdcclistfile", v)
+	}
+	if v, ok := get(env, "xdccxmlfile"); ok && v != "" {
+		c.XDCCXMLFile = strings.TrimSpace(v)
+		apply("xdccxmlfile", v)
+	}
+	if v, ok := get(env, "tcp_nodelay"); ok && v != "" {
+		c.TCPNoDelay = yesNo(v, c.TCPNoDelay)
+		apply("tcp_nodelay", v)
+	}
+	if v, ok := get(env, "tcp_buffer_size"); ok && v != "" {
+		c.TCPBufferSize = speedToBytes(v, c.TCPBufferSize)
+		apply("tcp_buffer_size", v)
+	}
+	if v, ok := get(env, "uploadhost"); ok {
+		c.UploadAllow = splitMulti(v)
+		apply("uploadhost", v)
+	}
+	if v, ok := get(env, "uploadminspace"); ok && v != "" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+			c.UploadMinSpace = n * 1024 * 1024
+			apply("uploadminspace", v)
+		}
+	}
+	if v, ok := get(env, "restrictlist"); ok && v != "" {
+		c.RestrictList = yesNo(v, c.RestrictList)
+		apply("restrictlist", v)
+	}
+	if v, ok := get(env, "restrictsend"); ok && v != "" {
+		c.RestrictSend = yesNo(v, c.RestrictSend)
+		apply("restrictsend", v)
+	}
+	if v, ok := get(env, "need_voice"); ok && v != "" {
+		c.NeedVoice = yesNo(v, c.NeedVoice)
+		apply("need_voice", v)
+	}
+	if v, ok := get(env, "need_level"); ok && v != "" {
+		c.NeedLevel = atoiOr(v, c.NeedLevel)
+		apply("need_level", v)
+	}
+	if v, ok := get(env, "announce_size"); ok && v != "" {
+		c.AnnounceSize = yesNo(v, c.AnnounceSize)
+		apply("announce_size", v)
+	}
+	if v, ok := get(env, "announce_date"); ok && v != "" {
+		c.AnnounceDate = yesNo(v, c.AnnounceDate)
+		apply("announce_date", v)
+	}
+	if v, ok := get(env, "status_time_dcc_chat"); ok && v != "" {
+		c.StatusInterval = atoiOr(v, c.StatusInterval)
+		apply("status_time_dcc_chat", v)
+	}
+	if v, ok := get(env, "old_statefile"); ok && v != "" {
+		c.OldStateFile = strings.TrimSpace(v)
+		apply("old_statefile", v)
+	}
 	if v, ok := get(env, "flood_protection_rate"); ok && v != "" {
 		c.FloodProtectionRate = atoiOr(v, c.FloodProtectionRate)
 		apply("flood_protection_rate", v)

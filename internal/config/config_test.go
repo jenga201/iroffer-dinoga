@@ -118,13 +118,21 @@ network {
 }
 
 func TestSplitChannelSpec(t *testing.T) {
-	ch, key := splitChannelSpec("#frog -key secret")
-	if ch != "#frog" || key != "secret" {
-		t.Fatalf("got (%q,%q), want (#frog,secret)", ch, key)
+	ch, key, na := splitChannelSpec("#frog -key secret")
+	if ch != "#frog" || key != "secret" || na {
+		t.Fatalf("got (%q,%q,%v), want (#frog,secret,false)", ch, key, na)
 	}
-	ch, key = splitChannelSpec("#frog")
-	if ch != "#frog" || key != "" {
-		t.Fatalf("got (%q,%q)", ch, key)
+	ch, key, na = splitChannelSpec("#frog")
+	if ch != "#frog" || key != "" || na {
+		t.Fatalf("got (%q,%q,%v), want (#frog,\"\",false)", ch, key, na)
+	}
+	ch, key, na = splitChannelSpec("#frog -noannounce")
+	if ch != "#frog" || key != "" || !na {
+		t.Fatalf("got (%q,%q,%v), want (#frog,\"\",true)", ch, key, na)
+	}
+	ch, key, na = splitChannelSpec("#frog -key secret -noannounce")
+	if ch != "#frog" || key != "secret" || !na {
+		t.Fatalf("got (%q,%q,%v), want (#frog,secret,true)", ch, key, na)
 	}
 }
 
@@ -383,6 +391,110 @@ autoignore_time 30
 	}
 	if !c.AutoAddAnn || c.FloodProtectionRate != 9 || c.AutoIgnoreTime != 30 {
 		t.Fatalf("announce/flood = %+v", c)
+	}
+}
+
+func TestLoadPackListingDirectives(t *testing.T) {
+	path := writeConfig(t, `
+nat_sort yes
+nocrc32 yes
+nomd5sum yes
+xdcclistfile /var/lib/dinoga/packlist.txt
+xdccxmlfile /var/lib/dinoga/packlist.xml
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.NaturalSort || !c.NoCRC32 || !c.NoMD5Sum {
+		t.Fatalf("listing flags = nat %v crc32 %v md5 %v", c.NaturalSort, c.NoCRC32, c.NoMD5Sum)
+	}
+	if c.XDCCListFile != "/var/lib/dinoga/packlist.txt" || c.XDCCXMLFile != "/var/lib/dinoga/packlist.xml" {
+		t.Fatalf("export files = %q / %q", c.XDCCListFile, c.XDCCXMLFile)
+	}
+}
+
+func TestEnvPackListingOverrides(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ApplyEnvOverrides(&c, []string{
+		"IROFFER_NAT_SORT=yes",
+		"IROFFER_NOCRC32=yes",
+		"IROFFER_XDCCLISTFILE=/tmp/packs.txt",
+	})
+	if !c.NaturalSort || !c.NoCRC32 || c.NoMD5Sum {
+		t.Fatalf("env listing overrides = %+v", c)
+	}
+	if c.XDCCListFile != "/tmp/packs.txt" {
+		t.Fatalf("XDCClistFile = %q", c.XDCCListFile)
+	}
+}
+
+func TestLoadParityDirectives(t *testing.T) {
+	path := writeConfig(t, `
+network {
+  server irc.example.net 7000
+  user_nick bot
+  channel #frog -key secret -noannounce
+}
+tcp_nodelay yes
+tcp_buffer_size 372
+uploadhost *!~me@*.example.com
+uploadminspace 10
+restrictlist yes
+restrictsend yes
+need_voice yes
+need_level 2
+announce_size yes
+announce_date yes
+status_time_dcc_chat 60
+old_statefile /tmp/state.old.json
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := c.Networks[0]
+	if !n.NoAnnounce || n.Key != "secret" || n.Channel != "#frog" {
+		t.Fatalf("network = %+v", n)
+	}
+	if !c.TCPNoDelay || c.TCPBufferSize != 372*1024 {
+		t.Fatalf("tcp = nodelay %v buf %d", c.TCPNoDelay, c.TCPBufferSize)
+	}
+	if len(c.UploadAllow) != 1 || c.UploadAllow[0] != "*!~me@*.example.com" || c.UploadMinSpace != 10*1024*1024 {
+		t.Fatalf("upload = %v minspace %d", c.UploadAllow, c.UploadMinSpace)
+	}
+	if !c.RestrictList || !c.RestrictSend || !c.NeedVoice || c.NeedLevel != 2 {
+		t.Fatalf("restrict = list %v send %v voice %v level %d", c.RestrictList, c.RestrictSend, c.NeedVoice, c.NeedLevel)
+	}
+	if !c.AnnounceSize || !c.AnnounceDate || c.StatusInterval != 60 || c.OldStateFile != "/tmp/state.old.json" {
+		t.Fatalf("announce/status = %+v", c)
+	}
+}
+
+func TestEnvParityOverrides(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ApplyEnvOverrides(&c, []string{
+		"IROFFER_TCP_NODELAY=yes",
+		"IROFFER_TCP_BUFFER_SIZE=256",
+		"IROFFER_UPLOADHOST=*!*@a.com;;*!*@b.com",
+		"IROFFER_RESTRICTSEND=yes",
+		"IROFFER_NEED_LEVEL=3",
+		"IROFFER_ANNOUNCE_SIZE=yes",
+	})
+	if !c.TCPNoDelay || c.TCPBufferSize != 256*1024 {
+		t.Fatalf("tcp env = %+v", c)
+	}
+	if len(c.UploadAllow) != 2 || c.UploadAllow[1] != "*!*@b.com" {
+		t.Fatalf("upload env = %v", c.UploadAllow)
+	}
+	if !c.RestrictSend || c.NeedLevel != 3 || !c.AnnounceSize {
+		t.Fatalf("restrict/announce env = %+v", c)
 	}
 }
 

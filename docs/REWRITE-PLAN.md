@@ -18,13 +18,14 @@
   `IRC/dcc-protocol/SXDCC.md`. Upstream C has no equivalent, so it is designed from
   the spec rather than from parity, and does not change the existing DCC/XDCC wire
   behavior.
-- **SXDCC transport (new):** a NAT-traversal transport layer for the SXDCC data
-  channel, specified in `IRC/dcc-protocol/SXDCC-TRANSPORT.md`. Additive to SXDCC:
-  pluggable `tcp`/`quic` transports, an ICE candidate exchange, a reverse-tunnel
-  "bounce" reliability baseline, and a TURN relay fallback, with opportunistic
-  migration to a direct hole-punched path. The TLS trust (SPKI pin) is identical on
-  every path; the path only trades reliability against metadata privacy and relay
-  cost. Implements the bounce baseline first, then QUIC/ICE.
+- **SXDCC transport (REVISED):** the earlier NAT-traversal transport layer
+  (pluggable `tcp`/`quic`, ICE, TURN, STUN, and the reverse-tunnel "bounce"
+  baseline, formerly `IRC/dcc-protocol/SXDCC-TRANSPORT.md`) was **removed**. The
+  SXDCC data channel now multiplexes onto the bot's **single shared control port**
+  (`SXDCC.md` §13.3), demultiplexed on the connection's first line (`AUTH` / `DATA`
+  / `ADMIN`). NAT traversal moved to the deployment layer: the hotio/base image's
+  WireGuard VPN forwards one port; the bot re-advertises it at runtime
+  (`internal/vpn`). The module is stdlib-only — no `quic-go`/`pion`/`go.uber.org`.
 
 ## Feature inventory (keep / drop)
 
@@ -59,48 +60,52 @@ directives, DROP = remove, DEFER = decide later.
 | 24 | Config template flag | print a template `iroffer.config` / `.env` to stdout | `cmd/dinoga` `--print-config` | ADD |
 | 25 | Password hash flag | generate an admin-password SHA-256 hash | `cmd/dinoga` `--hash-password` | ADD |
 | 26 | TUI mode | interactive terminal admin (no password, DCC-chat-equivalent commands) | `cmd/dinoga` `--tui` | ADD |
-| 27 | **SXDCC transport (NAT traversal)** | pluggable `tcp`/`quic` data transport, ICE candidate exchange, reverse-tunnel bounce baseline, TURN fallback, opportunistic direct migration | new `internal/bounce`, `cmd/bounce`, `internal/sxdcc` transport; `sxdcc_bounce`, `sxdcc_tunnel`, `sxdcc_tunnel_secret`, `sxdcc_stun*`, `sxdcc_turn*` directives | KEEP (new — spec `IRC/dcc-protocol/SXDCC-TRANSPORT.md`) |
+| 27 | ~~SXDCC transport (NAT traversal)~~ | ~~pluggable `tcp`/`quic` transport, ICE, TURN, STUN, reverse-tunnel bounce~~ | ~~`internal/bounce`, `cmd/bounce`, `sxdcc_bounce`, `sxdcc_tunnel*`, `sxdcc_stun*`, `sxdcc_turn*`~~ | REMOVED — data channel multiplexes on the shared control port (`SXDCC.md` §13.3); NAT traversal via hotio/base WireGuard VPN (`internal/vpn`) |
 
 ## Repo structure
 
-### Problem today
-`src/` is a full copy of the upstream C tree — redundant now that the
-`original-dinoex/` submodule exists and we are not editing C.
+### Current (repo root = Go module)
 
-### Proposed (repo root = Go module)
+The vendored C at `src/` is **removed**; the upstream C lives only in the
+`original-dinoex/` submodule (reference/A-B) with a runnable harness in
+`compat/original/`.
 
 ```
 iroffer-dinoga/
-├── cmd/dinoga/main.go          # entrypoint
+├── cmd/
+│   ├── dinoga/main.go          # entrypoint (config, logging, TUI, flags)
+│   ├── sxdccclient/main.go     # minimal SXDCC client (E2E testing)
+│   └── scanbench/main.go       # packlist-index stress benchmark
 ├── internal/
-│   ├── config/                 # iroffer.config parser + validation + env override
-│   ├── ircconn/                # IRC client (multi-network, TLS)
-│   ├── xdcc/                   # XDCC commands (LIST/SEND/INFO/BATCH/REMOVE)
-│   ├── dcc/                    # DCC SEND/RESUME/CHAT, active + passive
-│   ├── sxdcc/                  # SXDCC TLS 1.3 control + data (spec IRC/dcc-protocol/SXDCC.md)
-│   ├── packs/                  # packlist, autoadd scanner, crc32/md5
-│   ├── transfer/               # DCC transfer engine (slots, resume)
-│   ├── queue/                  # slots/queues/idle/bw limits
-│   ├── web/                    # HTTP interface (Go templates)
-│   ├── admin/                  # admin command console (chat/TUI)
-│   ├── geoip/                  # MaxMind mmdb (optional)
-│   └── fish/                   # FISH/Blowfish (optional)
-├── htdocs/                     # Go templates replacing the *.rb files
-├── go.mod / go.sum
-├── Dockerfile                  # multi-stage Go build -> static binary
-├── docker-compose.yml
-├── .env.example
-├── original-dinoex/            # git submodule (C reference, A/B)
-├── compat/original/            # thin harness to build/run the C bot for A/B
-├── scripts/                    # directive table gen, build helpers
+│   ├── config/                 # iroffer.config parser + env overlay + migration
+│   ├── irc/                    # multi-network IRC client + bot wiring + DCC
+│   ├── packs/                  # scan, lazy hash, natural sort, filters, dedup
+│   ├── xdcc/                   # XDCC command vocabulary
+│   ├── dcc/                    # DCC wire helpers (SEND/ACCEPT, passive/resume)
+│   ├── sxdcc/                  # SXDCC TLS 1.3 server (control + data)
+│   ├── sdcc/                   # SDCC admin chat server
+│   ├── queue/                  # slots/queues/idle queue
+│   ├── transfer/               # bandwidth throttle
+│   ├── state/                  # JSON statefile (packs, descs, extras, resume)
+│   ├── admin/                  # admin command registry
+│   ├── web/                    # HTTP packlist interface
+│   ├── acl/                    # hostmask allow/deny
+│   ├── ratelimit/              # flood protection
+│   ├── token/                  # single-use tokens (SXDCC/SDCC)
+│   ├── logging/                # file logging / rotation / stats
+│   ├── vpn/                    # hotio forwarded-port + public-IP discovery
+│   ├── geoip/                  # placeholder (MaxMind mmdb) — deferred
+│   └── fish/                   # placeholder (FISH/Blowfish) — deferred
+├── compat/original/            # original C build (Dockerfile/entrypoint) for A/B
+├── original-dinoex/            # upstream C source (git submodule)
+├── config/                     # runtime volume: dinoga.config, certs, wireguard
+├── root/                       # hotio/base s6-overlay services + PIA region picker
+├── docs/                       # REWRITE-PLAN.md, IMPLEMENTATION-SUMMARY.md
+├── go.mod / go.sum             # stdlib-only (no external requires)
+├── Dockerfile / docker-compose.yml / .env.example
+├── build.sh                    # static linux/amd64 build (host go or Docker)
 └── README.md
 ```
-
-- **Remove** the vendored C at `src/` (replace with the submodule reference).
-- **Keep** `original-dinoex/` as the source of truth for the C build.
-- **Add** `compat/original/` containing the existing C `Dockerfile` /
-  `entrypoint.sh` / `docker-compose.yml` (repointed at `../original-dinoex`),
-  so the old bot stays runnable for A/B.
 
 ## A/B testing
 
@@ -154,8 +159,8 @@ iroffer-dinoga/
 - [x] `XDCC INFO #N`
 - [x] `XDCC BATCH`
 - [x] `XDCC REMOVE` / `CANCEL`
-- [ ] pack descriptions (no release-group grouping; `xdcclist_grouponly` is DROP)
-- [ ] `xdcclistfile` / `xdccxmlfile` export
+- [x] pack descriptions (no release-group grouping; `xdcclist_grouponly` is DROP) — shown inline in `LIST` and `INFO`
+- [x] `xdcclistfile` / `xdccxmlfile` export (plain-text + XML, written after each scan/persist)
 
 ### 3. DCC transfer engine — KEEP ✅
 
@@ -163,18 +168,19 @@ iroffer-dinoga/
 - [x] Passive/reverse DCC SEND (bot connects out)
 - [x] DCC RESUME / DCC ACCEPT + seek
 - [x] IP `<->` 32-bit-int conversion (`35605696 <-> 2.31.76.192`)
-- [ ] TCP tuning (`tcp_buffer_size`, `tcp_nodelay`)
+- [x] TCP tuning (`tcp_buffer_size`, `tcp_nodelay`) — applied to DCC send/chat/upload sockets
 
 ### 4. DCC chat — KEEP* (redesign)
 
 - [x] DCC CHAT connect + send/receive (basic `status`/`list`/`quit`)
-- [ ] status screen (`status_time_dcc_chat`)
+- [x] status screen (`status_time_dcc_chat`) — multi-line slots/queue/packs status + periodic refresh
 
 ### 5. File hashing — KEEP ✅
 
 - [x] CRC32 (IEEE)
 - [x] MD5
-- [ ] Wire `auto_crc_check` / `verbose_crc32` / `nomd5sum` / `nocrc32` toggles
+- [x] `nomd5sum` / `nocrc32` toggles (suppress MD5/CRC32 in `xdcc info`)
+- [ ] Wire `auto_crc_check` / `verbose_crc32` toggles
 - [ ] `.crc32` / `.md5` sidecar reading
 
 ### 6. Queue / slot / bandwidth — KEEP
@@ -190,7 +196,7 @@ iroffer-dinoga/
 
 - [x] Scan `filedir` / `autoadd_dir`
 - [x] `autoadd_time` periodic rescan (off the IRC loop)
-- [x] Natural sort (`strnatcmp` style) — implemented as `packs.WithNaturalSort()` option (not yet the default)
+- [x] Natural sort (`strnatcmp` style) — `packs.WithNaturalSort()` option, wired to the `nat_sort` config directive
 - [x] `addpack` / `removepack` / `chdesc` (with #12; descriptions persisted and shown in `xdcc info`)
 - [x] `noduplicatefiles` / `no_duplicate_filenames`
 - [x] `adddir_exclude` / `adddir_match` / `adddir_min_size`
@@ -200,7 +206,7 @@ iroffer-dinoga/
 
 - [x] Accept incoming `DCC SEND` to the bot (ACK receive → `uploaddir`)
 - [x] `uploadmaxsize`
-- [ ] `uploadhost` allow/deny, `uploadminspace`
+- [x] `uploadhost` allow-list + `uploadminspace` (free-disk check)
 
 ### 9. Config system — KEEP* / PRUNE (partial)
 
@@ -212,7 +218,8 @@ iroffer-dinoga/
 ### 10. State persistence — KEEP
 
 - [x] Save/load packlist (JSON `statefile` via `internal/state`)
-- [ ] queues + resume-point persistence; `old_statefile` compatibility
+- [x] resume-point persistence (per-pack offsets) + `old_statefile` rolling backup
+- [ ] queue re-offer across restart (pending queued transfers are not re-sent)
 
 ### 11. HTTP web interface — KEEP* (native templates)
 
@@ -232,14 +239,16 @@ iroffer-dinoga/
 - [x] hostmask allow/deny (`downloadhost`, `xdcc_allow`/`xdcc_deny`) via `internal/acl`
 - [x] per-user limits (`maxtransfersperperson`, `maxqueueitemsperperson`, `maxidlequeuedperperson`) via `internal/queue`
 - [x] flood protection + auto-ignore (`flood_protection_rate` / `autoignore_time`) via `internal/ratelimit`
-- [ ] `need_level` / `need_voice`
-- [ ] `restrictlist` / `restrictsend` / `restrictpriv*`
+- [x] `need_level` / `need_voice` (channel-mode gating via `internal/irc` NAMES/MODE tracking)
+- [x] `restrictlist` / `restrictsend` (channel-membership gating)
+- [ ] `restrictpriv*` (restrictprivlist/restrictprivlistmsg/restrictprivlistmain/full)
 
 ### 14. Announcements — KEEP
 
 - [x] `headline` (announce on join) + `periodicmsg`
 - [x] `autoaddann` (announce newly-scanned packs to every network channel)
-- [ ] `announce_*` (size/date/separator formatting, per-channel `noannounce`)
+- [x] `announce_size` / `announce_date` formatting, per-channel `-noannounce`
+- [ ] `announce_separator`
 
 ### 15. Logging / stats — KEEP*
 
@@ -271,7 +280,7 @@ Deferred: Blowfish is not in the Go stdlib. Revisit only if requested.
 ### 22. Misc utils
 
 - [x] Event loop → Go netpoller (replaces kqueue/select)
-- [ ] Natural sort (`strnatcmp` semantics) shared with #7
+- [x] Natural sort (`strnatcmp` semantics) shared with #7 (`packs.Less`, `nat_sort`)
 
 ### 23. SXDCC — KEEP (new feature)
 
@@ -279,7 +288,8 @@ Spec: `IRC/dcc-protocol/SXDCC.md`.
 
 - [x] Read the spec (§6 crypto, §7 trust/TOFU, §8 rendezvous, §9 control, §10 data)
 - [x] `sxdcc_enable` flag; when set, auto-generate an Ed25519 self-signed leaf (IP SAN) on start
-  and persist the key (survives restart); admin key-regenerate is TODO
+  and persist the key (survives restart)
+- [x] Admin key-regen (`regenkey` admin command → `sxdcc.Server.RegenerateKey`)
 - [x] SPKI pin: compute `sha256:<base64url>`; constant-time compare + publish over IRC
 - [x] IRC trigger `/msg <bot> sxdcc <verb> [args]` → bot replies `SXDCC CONNECT <ip> <port> <token> <pin>`
   (single-use short-TTL token)
@@ -306,19 +316,20 @@ Spec: `IRC/dcc-protocol/SXDCC.md`.
 
 - [x] `--tui` runs an interactive admin command loop on stdin (no password)
 
-### 27. SXDCC transport (NAT traversal) — KEEP (new feature)
+### 27. SXDCC transport (NAT traversal) — REMOVED
 
-Spec: `IRC/dcc-protocol/SXDCC-TRANSPORT.md`.
+This feature was **removed**. The pluggable `tcp`/`quic` transports, ICE/STUN/TURN
+candidate exchange, and the reverse-tunnel "bounce" baseline (formerly spec'd in
+`IRC/dcc-protocol/SXDCC-TRANSPORT.md`, since deleted) are no longer in the codebase,
+and the external deps they required (`quic-go`, `pion/turn`) were dropped — the
+module is stdlib-only.
 
-- [x] Pluggable data transport (`tcp` baseline + `quic` direct), reusing the SPKI pin + `datatoken`
-- [x] Reverse-tunnel bounce baseline: `cmd/bounce` relay + bot outbound tunnel (`internal/bounce`), byte-forwarding (never terminates TLS)
-- [x] QUIC data channel (quic-go v0.60.0, Go 1.25) — active/direct, `transport=quic`, SPKI pin + `datatoken`, `sxdcc_transport` directive
-- [x] ICE candidate exchange on the control channel (`CANDIDATE` / `CANDIDATES-END`, scoped by `datatoken`)
-- [x] STUN server-reflexive discovery (`internal/stun`, minimal RFC 8489 client) + hole-punched direct path (QUIC over a pre-bound UDP socket, punch packets)
-- [x] TURN relay fallback (pion/turn v4.1.4) — `internal/sxdcc/turn.go` + `relay` candidate (`sxdcc_turn*` directives)
-- [x] Relay/direct fallback at transfer setup — `serveDataQUIC` accepts on direct or relay listener, whichever completes first
-- [x] Docker "real NAT" topology test (bounce baseline)
-- [x] Docker "real NAT" hole-punch test — `nat-holepunch/` with `cmd/natgw` (userspace full-cone NAT + STUN), `cmd/holepunchtest` (srflx discovery → punch → QUIC over the reflexive address); 1 MiB byte-verified through the NAT, deterministic
-- [x] Resolve loopback candidate-exchange flake — root cause was `serveDataQUIC`'s deferred `tr.pconn.Close()` dropping in-flight bytes/FIN (QUIC `io.Copy` returns after queuing, not delivery); fixed by waiting for `conn.Context().Done()` before teardown. `TestQUICDataRoundtrip`/`TestQUICRelayCandidate` now 50/50 deterministic.
+The replacement model is:
 
-Dependencies: quic-go v0.60.0 (Go 1.25), pion/turn v4.1.4. `pion/ice`/`pion/stun` were implemented natively (`internal/stun`) instead of pulled in.
+- **Data channel:** multiplexed onto the single shared control port per
+  `SXDCC.md` §13.3, demultiplexed by first line (`AUTH` control / `DATA` data /
+  `ADMIN` admin). The control listener already implements this (`serveSecureDCC`).
+- **NAT traversal:** handled at the deployment layer by the hotio/base image's
+  WireGuard VPN (one forwarded port), with the bot re-advertising the discovered
+  address at runtime via `internal/vpn` (and rotating the SXDCC identity when the
+  public IP changes).

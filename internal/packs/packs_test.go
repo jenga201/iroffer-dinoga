@@ -58,6 +58,22 @@ func TestNaturalSort(t *testing.T) {
 	}
 }
 
+func TestLessNaturalOrder(t *testing.T) {
+	if !Less("file1.bin", "file2.bin") {
+		t.Fatal("file1 should sort before file2")
+	}
+	if !Less("file2.bin", "file10.bin") {
+		t.Fatal("file2 should sort before file10 (numeric run)")
+	}
+	if Less("file10.bin", "file2.bin") {
+		t.Fatal("file10 must not sort before file2")
+	}
+	// Case-insensitive with byte-order tiebreak, mirroring naturalLess.
+	if !Less("A.bin", "a.bin") {
+		t.Fatal("uppercase A should sort before lowercase a on tie")
+	}
+}
+
 func TestRecurseAndFilter(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "sub"), 0o700)

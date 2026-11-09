@@ -1,6 +1,8 @@
 package xdcc
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,8 @@ type stubClient struct {
 	sentPacks []string
 	packlist  []packs.Pack
 	cancelled bool
+	md5OK     bool
+	crc32OK   bool
 }
 
 func (s *stubClient) Notice(target, msg string)  { s.notices = append(s.notices, msg) }
@@ -24,6 +28,7 @@ func (s *stubClient) SendPack(target string, p packs.Pack) error {
 func (s *stubClient) Packlist() []packs.Pack          { return s.packlist }
 func (s *stubClient) CancelQueued(target string) bool { return s.cancelled }
 func (s *stubClient) PacklistURL() string             { return "" }
+func (s *stubClient) Checksums() (bool, bool)         { return s.md5OK, s.crc32OK }
 
 func threePacks() []packs.Pack {
 	return []packs.Pack{
@@ -108,5 +113,47 @@ func TestInfoDescription(t *testing.T) {
 	Handle(c, "u", "xdcc info #1")
 	if !strings.Contains(strings.Join(c.notices, "\n"), "first pack") {
 		t.Fatalf("notices = %v", c.notices)
+	}
+}
+
+func TestListDescription(t *testing.T) {
+	pl := threePacks()
+	pl[1].Desc = "second pack"
+	c := &stubClient{packlist: pl}
+	Handle(c, "u", "xdcc list")
+	joined := strings.Join(c.notices, "\n")
+	if !strings.Contains(joined, "#2     20 [b.bin] second pack") {
+		t.Fatalf("list notices = %v", c.notices)
+	}
+}
+
+func TestInfoChecksums(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.bin")
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pk, err := packs.FromPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk.Number = 1
+
+	c := &stubClient{packlist: []packs.Pack{pk}, md5OK: true, crc32OK: true}
+	Handle(c, "u", "xdcc info #1")
+	joined := strings.Join(c.notices, "\n")
+	if !strings.Contains(joined, "md5: 5d41402abc4b2a76b9719d911017c592") {
+		t.Fatalf("missing md5 in notices = %v", c.notices)
+	}
+	if !strings.Contains(joined, "crc32: 3610a686") {
+		t.Fatalf("missing crc32 in notices = %v", c.notices)
+	}
+
+	// nomd5sum/nocrc32 suppress the respective lines.
+	c2 := &stubClient{packlist: []packs.Pack{pk}}
+	Handle(c2, "u", "xdcc info #1")
+	joined2 := strings.Join(c2.notices, "\n")
+	if strings.Contains(joined2, "md5:") || strings.Contains(joined2, "crc32:") {
+		t.Fatalf("checksums should be suppressed, got = %v", c2.notices)
 	}
 }

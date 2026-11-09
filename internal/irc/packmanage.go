@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/jenga201/dinoga/internal/admin"
+	"github.com/jenga201/dinoga/internal/dcc"
 	"github.com/jenga201/dinoga/internal/packs"
 	"github.com/jenga201/dinoga/internal/state"
 )
@@ -59,14 +61,18 @@ func (c *Client) loadState() {
 		}
 		c.excluded[path] = true
 	}
+	if f.Resume != nil {
+		c.resume = f.Resume
+	}
 }
 
-// persist snapshots the current pack list (plus extras, descriptions, and
-// exclusions) to the state file.
+// persist snapshots the current pack list (plus extras, descriptions, resume
+// offsets, and exclusions) to the state file.
 func (c *Client) persist() {
 	if c.cfg.StateFile == "" {
 		return
 	}
+	c.backupState()
 
 	c.mu.RLock()
 	packsSlice := recordPackList(c.packlist)
@@ -78,6 +84,10 @@ func (c *Client) persist() {
 	for path := range c.excluded {
 		excluded = append(excluded, path)
 	}
+	resume := make(map[string]int64, len(c.resume))
+	for path, off := range c.resume {
+		resume[path] = off
+	}
 	sort.Strings(excluded)
 	c.mu.RUnlock()
 
@@ -85,8 +95,24 @@ func (c *Client) persist() {
 		Packs:    packsSlice,
 		Extras:   extras,
 		Excluded: excluded,
+		Resume:   resume,
 	}); err != nil {
 		log.Printf("state save: %v", err)
+	}
+
+	c.exportPacklists()
+}
+
+// backupState rolls the current state file to old_statefile (if configured)
+// before a new state is written, so the previous-known-good state survives.
+func (c *Client) backupState() {
+	if c.cfg.OldStateFile == "" || c.cfg.OldStateFile == c.cfg.StateFile {
+		return
+	}
+	if _, err := os.Stat(c.cfg.StateFile); err == nil {
+		if err := os.Rename(c.cfg.StateFile, c.cfg.OldStateFile); err != nil {
+			log.Printf("old_statefile: %v", err)
+		}
 	}
 }
 
@@ -125,8 +151,12 @@ func (c *Client) mergeLocked(disk []packs.Pack) []packs.Pack {
 	for _, p := range byPath {
 		out = append(out, p)
 	}
+	natural := c.cfg.NaturalSort
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
+			if natural {
+				return packs.Less(out[i].Name, out[j].Name)
+			}
 			return out[i].Name < out[j].Name
 		}
 		return out[i].Path < out[j].Path
@@ -267,6 +297,28 @@ func (c *Client) registerAdminCommands(s *admin.Server) {
 				return err
 			}
 			fmt.Fprintln(out, "updated")
+			return nil
+		},
+	})
+	_ = s.Register(admin.Command{
+		Name:  "regenkey",
+		Usage: "regenkey",
+		Help:  "Regenerate the SXDCC identity and print the new SPKI pin.",
+		Run: func(out io.Writer, args []string) error {
+			if c.sxdcc == nil {
+				return fmt.Errorf("sxdcc is not enabled")
+			}
+			pin, err := c.sxdcc.RegenerateKey()
+			if err != nil {
+				return err
+			}
+			if ip, port := c.advertise(); ip != "" && port > 0 {
+				if ipInt, e := dcc.IPToInt(ip); e == nil && c.sdcc != nil {
+					c.sdcc.SetAdvertise(ipInt, port, pin)
+				}
+			}
+			fmt.Fprintf(out, "pin: %s\n", pin)
+			c.Logf("sxdcc: regenerated identity, pin %s", pin)
 			return nil
 		},
 	})

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jenga201/dinoga/internal/acl"
@@ -76,6 +77,7 @@ type Client struct {
 	extras   map[string]packs.Pack // runtime-added packs (addpack), keyed by path
 	descs    map[string]string     // pack descriptions (chdesc), keyed by path
 	excluded map[string]bool       // paths removed from the list (removepack)
+	resume   map[string]int64      // per-pack resume offsets (path -> bytes)
 
 	tmu       sync.Mutex // guards transfers/nextToken
 	transfers map[int]*transfer
@@ -100,6 +102,8 @@ type Client struct {
 	webHandlerCache http.Handler
 
 	acl *acl.Matcher
+
+	uploadACL *acl.Matcher // uploadhost allow-list (empty = allow all)
 
 	flood *ratelimit.Limiter // nil = flood protection disabled
 
@@ -126,6 +130,8 @@ func New(cfg config.Config, logger *logging.Logger) *Client {
 		pending:   map[string]*queueItem{},
 		q:         m,
 		acl:       acl.New(cfg.XDCCAllow, cfg.XDCCDeny),
+		uploadACL: acl.New(cfg.UploadAllow, nil),
+		resume:    map[string]int64{},
 		firstScan: true,
 	}
 	if cfg.OverallMaxSpeed > 0 {
@@ -157,7 +163,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 
 	for _, net := range c.cfg.Networks {
-		nc := &netConn{c: c, net: net}
+		nc := &netConn{c: c, net: net, modes: newChannelModes()}
 		c.addNet(nc)
 		go nc.run(ctx)
 	}
@@ -170,15 +176,20 @@ func (c *Client) Run(ctx context.Context) error {
 	return nil
 }
 
-// statsInterval matches the upstream status_time_dcc_chat default, which is
-// how often iroffer-dinoex writes its logstats line.
-const statsInterval = 120 * time.Second
+// statusInterval returns the status/logstats tick interval (status_time_dcc_chat,
+// default 120 s).
+func (c *Client) statusInterval() time.Duration {
+	if c.cfg.StatusInterval <= 0 {
+		return 120 * time.Second
+	}
+	return time.Duration(c.cfg.StatusInterval) * time.Second
+}
 
 // statsLoop periodically writes a status line to the main log while logstats
 // is enabled. It is only started when a logfile is configured, since that is
 // where the line is written.
 func (c *Client) statsLoop(ctx context.Context) {
-	t := time.NewTicker(statsInterval)
+	t := time.NewTicker(c.statusInterval())
 	defer t.Stop()
 	for {
 		select {
@@ -210,7 +221,8 @@ type netConn struct {
 	net      config.Network
 	mu       sync.Mutex // guards conn
 	conn     net.Conn
-	failures int // consecutive disconnects (reset on successful registration; run goroutine only)
+	failures int           // consecutive disconnects (reset on successful registration; run goroutine only)
+	modes    *channelModes // channel members + per-user modes (restrict*/need_*)
 }
 
 func (nc *netConn) writef(format string, args ...any) {
@@ -223,7 +235,7 @@ func (nc *netConn) writef(format string, args ...any) {
 }
 
 func (nc *netConn) run(ctx context.Context) {
-	if nc.c.cfg.PeriodicMsg != "" && nc.c.cfg.PeriodicInterval > 0 {
+	if nc.c.cfg.PeriodicMsg != "" && nc.c.cfg.PeriodicInterval > 0 && !nc.net.NoAnnounce {
 		go nc.periodicLoop(ctx, time.Duration(nc.c.cfg.PeriodicInterval)*time.Second)
 	}
 
@@ -359,6 +371,26 @@ func (nc *netConn) handle(line string) {
 		if nc.c.logger != nil {
 			nc.c.logger.Notice(sender + " " + args)
 		}
+	case "353":
+		nc.modes.applyNAMES(args)
+	case "366":
+		// end of NAMES (channel members are now tracked)
+	case "MODE":
+		nc.modes.applyMode(args)
+	case "JOIN":
+		if ch := strings.TrimPrefix(strings.TrimSpace(args), ":"); strings.EqualFold(ch, nc.net.Channel) {
+			nc.modes.add(nick(sender))
+		}
+	case "PART":
+		if f := strings.Fields(args); len(f) >= 1 && strings.EqualFold(strings.TrimPrefix(f[0], ":"), nc.net.Channel) {
+			nc.modes.remove(nick(sender))
+		}
+	case "QUIT":
+		nc.modes.remove(nick(sender))
+	case "KICK":
+		if f := strings.Fields(args); len(f) >= 2 && strings.EqualFold(strings.TrimPrefix(f[0], ":"), nc.net.Channel) {
+			nc.modes.remove(f[1])
+		}
 	}
 }
 
@@ -368,7 +400,7 @@ func (nc *netConn) join() {
 	} else {
 		nc.writef("JOIN %s %s", nc.net.Channel, nc.net.Key)
 	}
-	if h := nc.c.cfg.Headline; h != "" {
+	if h := nc.c.cfg.Headline; h != "" && !nc.net.NoAnnounce {
 		nc.writef("PRIVMSG %s :%s", nc.net.Channel, h)
 	}
 }
@@ -386,7 +418,7 @@ func (nc *netConn) handlePrivmsg(sender, args string) {
 
 	from := nick(sender)
 	if strings.HasPrefix(message, "\x01") && strings.HasSuffix(message, "\x01") && len(message) >= 2 {
-		nc.handleCTCP(from, message[1:len(message)-1])
+		nc.handleCTCP(sender, from, message[1:len(message)-1])
 		return
 	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(message)), "sdcc") {
@@ -404,7 +436,52 @@ func (nc *netConn) handlePrivmsg(sender, args string) {
 	if isXDCCCommand(message) && nc.c.flood != nil && !nc.c.flood.Allow(sender) {
 		return
 	}
+	switch xdccVerb(message) {
+	case "list", "info":
+		if !nc.canList(from) {
+			nc.Notice(from, "** You are not allowed to list from this bot **")
+			return
+		}
+	case "send", "batch":
+		if !nc.canSend(from) {
+			nc.Notice(from, "** You are not allowed to download from this bot **")
+			return
+		}
+	}
 	xdcc.Handle(nc, from, message)
+}
+
+// canList reports whether a user may xdcc list/info under restrictlist.
+func (nc *netConn) canList(from string) bool {
+	if !nc.c.cfg.RestrictList {
+		return true
+	}
+	return nc.modes.member(from)
+}
+
+// canSend reports whether a user may xdcc send/batch under restrictsend, plus
+// the optional need_voice/need_level refinement.
+func (nc *netConn) canSend(from string) bool {
+	if !nc.c.cfg.RestrictSend {
+		return true
+	}
+	if nc.c.cfg.NeedVoice {
+		return nc.modes.level(from) >= 1
+	}
+	if nc.c.cfg.NeedLevel > 0 {
+		return nc.modes.level(from) >= nc.c.cfg.NeedLevel
+	}
+	return nc.modes.member(from)
+}
+
+// xdccVerb returns the lowercased XDCC command verb of a private message, or ""
+// when it is not an "xdcc <verb>" command.
+func xdccVerb(message string) string {
+	f := strings.Fields(strings.TrimSpace(message))
+	if len(f) < 2 || !strings.EqualFold(f[0], "xdcc") {
+		return ""
+	}
+	return strings.ToLower(f[1])
 }
 
 // isDownload reports whether a private message is a download request (as
@@ -454,14 +531,14 @@ func (nc *netConn) periodicLoop(ctx context.Context, d time.Duration) {
 
 // --- CTCP (DCC) handling ---
 
-func (nc *netConn) handleCTCP(from, ctcp string) {
+func (nc *netConn) handleCTCP(sender, from, ctcp string) {
 	fields := strings.Fields(ctcp)
 	if len(fields) < 2 || !strings.EqualFold(fields[0], "DCC") {
 		return
 	}
 	switch strings.ToUpper(fields[1]) {
 	case "SEND":
-		nc.handleDCCSend(from, fields)
+		nc.handleDCCSend(sender, from, fields)
 	case "RESUME":
 		nc.handleDCCResume(from, fields)
 	case "CHAT":
@@ -469,7 +546,7 @@ func (nc *netConn) handleCTCP(from, ctcp string) {
 	}
 }
 
-func (nc *netConn) handleDCCSend(from string, f []string) {
+func (nc *netConn) handleDCCSend(sender, from string, f []string) {
 	if len(f) < 6 {
 		return
 	}
@@ -491,13 +568,14 @@ func (nc *netConn) handleDCCSend(from string, f []string) {
 				release := tr.release
 				c.tmu.Unlock()
 				ip := dccIP(f[3])
+				tcpCfg := dcc.TCPConfig{NoDelay: nc.c.cfg.TCPNoDelay, BufferSize: nc.c.cfg.TCPBufferSize}
 				go func() {
 					defer func() {
 						if release != nil {
 							release()
 						}
 					}()
-					if err := dcc.ConnectAndSend(ip, port, tr.path, offset); err != nil {
+					if err := dcc.ConnectAndSend(ip, port, tr.path, offset, tcpCfg); err != nil {
 						log.Printf("passive send to %s failed: %v", from, err)
 					}
 				}()
@@ -510,6 +588,16 @@ func (nc *netConn) handleDCCSend(from string, f []string) {
 	// Case 2: upload offer.
 	if nc.c.cfg.UploadDir == "" {
 		return
+	}
+	if nc.c.uploadACL != nil && !nc.c.uploadACL.Empty() && !nc.c.uploadACL.Allowed(sender) {
+		nc.Notice(from, "** Upload rejected: you are not an upload host **")
+		return
+	}
+	if nc.c.cfg.UploadMinSpace > 0 {
+		if free, err := diskFreeBytes(nc.c.cfg.UploadDir); err == nil && free < nc.c.cfg.UploadMinSpace {
+			nc.Notice(from, "** Upload rejected: not enough disk space **")
+			return
+		}
 	}
 	if len(f) >= 6 && nc.c.cfg.UploadMaxSize > 0 {
 		if size, err := strconv.ParseInt(f[5], 10, 64); err == nil && size > nc.c.cfg.UploadMaxSize {
@@ -559,8 +647,10 @@ func (nc *netConn) handleDCCResume(from string, f []string) {
 		return
 	}
 	tr.offset = position
+	path := tr.path
 	c.tmu.Unlock()
 
+	c.setResume(path, position)
 	nc.Privmsg(from, dcc.BuildDCCAccept(filename, portStr, position, token))
 	log.Printf("resume accepted: %s @ %d (port %s)", filename, position, portStr)
 }
@@ -638,6 +728,10 @@ func (nc *netConn) CancelQueued(target string) bool {
 	return nc.c.CancelQueued(target)
 }
 
+func (nc *netConn) Checksums() (bool, bool) {
+	return !nc.c.cfg.NoMD5Sum, !nc.c.cfg.NoCRC32
+}
+
 // --- shared state ---
 
 func (c *Client) scan() error {
@@ -661,9 +755,12 @@ func (c *Client) scan() error {
 }
 
 // scanOptions builds the packs.Scan option list from the configured filters
-// (noduplicatefiles, adddir_exclude/match, adddir_min_size).
+// (noduplicatefiles, adddir_exclude/match, adddir_min_size, nat_sort).
 func (c *Client) scanOptions() []packs.Option {
 	var opts []packs.Option
+	if c.cfg.NaturalSort {
+		opts = append(opts, packs.WithNaturalSort())
+	}
 	if c.cfg.NoDuplicateFiles {
 		opts = append(opts, packs.WithDedup())
 	}
@@ -815,6 +912,7 @@ func (c *Client) serveActive(tr *transfer) {
 		return
 	}
 	defer conn.Close()
+	dcc.ConfigureTCP(conn, dcc.TCPConfig{NoDelay: c.cfg.TCPNoDelay, BufferSize: c.cfg.TCPBufferSize})
 
 	c.tmu.Lock()
 	offset := tr.offset
@@ -827,9 +925,25 @@ func (c *Client) serveActive(tr *transfer) {
 	if c.globalTB != nil {
 		w = throttle.NewThrottledWriter(w, c.globalTB)
 	}
-	if err := dcc.StreamTo(w, tr.path, offset); err != nil {
+	cw := &countingWriter{w: w}
+	if err := dcc.StreamTo(cw, tr.path, offset); err != nil {
 		log.Printf("send %s failed: %v", tr.name, err)
+		c.setResume(tr.path, offset+cw.n)
+		return
 	}
+	c.clearResume(tr.path)
+}
+
+// countingWriter counts the bytes written through it, for resume-point tracking.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func (c *Client) removeTransfer(token int) {
@@ -848,6 +962,33 @@ func dccIP(s string) string {
 	return s
 }
 
+// setResume records a pack's resume offset, and clearResume drops it on a full
+// send. Together they persist per-pack resume bookkeeping in the state file.
+func (c *Client) setResume(path string, offset int64) {
+	c.mu.Lock()
+	if c.resume == nil {
+		c.resume = map[string]int64{}
+	}
+	c.resume[path] = offset
+	c.mu.Unlock()
+}
+
+func (c *Client) clearResume(path string) {
+	c.mu.Lock()
+	delete(c.resume, path)
+	c.mu.Unlock()
+}
+
+// diskFreeBytes returns the free disk space (bytes) available on the filesystem
+// containing dir. Linux-only (syscall.Statfs); the bot only builds for Linux.
+func diskFreeBytes(dir string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
 func (c *Client) receiveUpload(from, filename, ip string, port int) {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), 15*time.Second)
 	if err != nil {
@@ -855,6 +996,7 @@ func (c *Client) receiveUpload(from, filename, ip string, port int) {
 		return
 	}
 	defer conn.Close()
+	dcc.ConfigureTCP(conn, dcc.TCPConfig{NoDelay: c.cfg.TCPNoDelay, BufferSize: c.cfg.TCPBufferSize})
 
 	safe := filepath.Base(filename)
 	if err := os.MkdirAll(c.cfg.UploadDir, 0o755); err != nil {
@@ -906,6 +1048,7 @@ func (c *Client) serveDCCChat(from, addr string) {
 		return
 	}
 	defer conn.Close()
+	dcc.ConfigureTCP(conn, dcc.TCPConfig{NoDelay: c.cfg.TCPNoDelay, BufferSize: c.cfg.TCPBufferSize})
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	send := func(s string) { _, _ = rw.WriteString(s + "\r\n"); _ = rw.Flush() }
@@ -913,13 +1056,18 @@ func (c *Client) serveDCCChat(from, addr string) {
 	send(fmt.Sprintf("** Dinoga DCC chat for %s **", from))
 	send(fmt.Sprintf("** %d pack(s) **", len(c.Packlist())))
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(c.statusInterval()))
 		line, err := rw.ReadString('\n')
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				c.writeChatStatus(send)
+				continue
+			}
 			return
 		}
 		switch strings.ToLower(strings.TrimRight(line, "\r\n \t")) {
 		case "status":
-			send(fmt.Sprintf("packs: %d", len(c.Packlist())))
+			c.writeChatStatus(send)
 		case "list":
 			pl := c.Packlist()
 			for i, p := range pl {
@@ -932,6 +1080,18 @@ func (c *Client) serveDCCChat(from, addr string) {
 			return
 		}
 	}
+}
+
+// writeChatStatus emits the DCC chat status screen (slots/queues/packs).
+func (c *Client) writeChatStatus(send func(string)) {
+	s := c.q.Snapshot()
+	used := c.cfg.SlotsMax - s.FreeSlots
+	if used < 0 {
+		used = 0
+	}
+	send(fmt.Sprintf("packs: %d", len(c.Packlist())))
+	send(fmt.Sprintf("slots: %d/%d in use", used, c.cfg.SlotsMax))
+	send(fmt.Sprintf("queue: %d queued, %d idle", s.QueueLen, s.IdleLen))
 }
 
 // --- SXDCC / web / admin ---

@@ -68,9 +68,9 @@ func applyFile(c *Config, path string) error {
 				c.Nick = value
 			}
 		case "channel":
-			ch, k := splitChannelSpec(value)
+			ch, k, na := splitChannelSpec(value)
 			if cur != nil {
-				cur.Channel, cur.Key = ch, k
+				cur.Channel, cur.Key, cur.NoAnnounce = ch, k, na
 			} else {
 				c.Channel, c.ChannelKey = ch, k
 			}
@@ -178,6 +178,42 @@ func applyFile(c *Config, path string) error {
 			}
 		case "autoaddann":
 			c.AutoAddAnn = yesNo(value, c.AutoAddAnn)
+		case "nat_sort":
+			c.NaturalSort = yesNo(value, c.NaturalSort)
+		case "nocrc32":
+			c.NoCRC32 = yesNo(value, c.NoCRC32)
+		case "nomd5sum":
+			c.NoMD5Sum = yesNo(value, c.NoMD5Sum)
+		case "xdcclistfile":
+			c.XDCCListFile = value
+		case "xdccxmlfile":
+			c.XDCCXMLFile = value
+		case "tcp_nodelay":
+			c.TCPNoDelay = yesNo(value, c.TCPNoDelay)
+		case "tcp_buffer_size":
+			c.TCPBufferSize = speedToBytes(value, c.TCPBufferSize)
+		case "uploadhost":
+			c.UploadAllow = append(c.UploadAllow, fields(value)...)
+		case "uploadminspace":
+			if n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+				c.UploadMinSpace = n * 1024 * 1024
+			}
+		case "restrictlist":
+			c.RestrictList = yesNo(value, c.RestrictList)
+		case "restrictsend":
+			c.RestrictSend = yesNo(value, c.RestrictSend)
+		case "need_voice":
+			c.NeedVoice = yesNo(value, c.NeedVoice)
+		case "need_level":
+			c.NeedLevel = atoiOr(value, c.NeedLevel)
+		case "announce_size":
+			c.AnnounceSize = yesNo(value, c.AnnounceSize)
+		case "announce_date":
+			c.AnnounceDate = yesNo(value, c.AnnounceDate)
+		case "status_time_dcc_chat":
+			c.StatusInterval = atoiOr(value, c.StatusInterval)
+		case "old_statefile":
+			c.OldStateFile = value
 		case "flood_protection_rate":
 			c.FloodProtectionRate = atoiOr(value, c.FloodProtectionRate)
 		case "autoignore_time":

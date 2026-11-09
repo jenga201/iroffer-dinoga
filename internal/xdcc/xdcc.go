@@ -23,6 +23,9 @@ type Client interface {
 	// PacklistURL returns the public HTTP URL of the packlist ("" when not
 	// available), advertised in the "xdcc list" reply.
 	PacklistURL() string
+	// Checksums reports whether "xdcc info" should advertise MD5 and CRC32.
+	// The bot computes them lazily; nomd5sum/nocrc32 disable each.
+	Checksums() (md5 bool, crc32 bool)
 }
 
 // Handle routes one private message to the bot (e.g. "xdcc list", "xdcc send #1").
@@ -50,7 +53,11 @@ func sendList(c Client, target string) {
 		c.Notice(target, fmt.Sprintf("** Packlist: %s **", url))
 	}
 	for _, p := range pl {
-		c.Notice(target, fmt.Sprintf("#%d %6d [%s]", p.Number, p.Size, p.Name))
+		if p.Desc != "" {
+			c.Notice(target, fmt.Sprintf("#%d %6d [%s] %s", p.Number, p.Size, p.Name, p.Desc))
+		} else {
+			c.Notice(target, fmt.Sprintf("#%d %6d [%s]", p.Number, p.Size, p.Name))
+		}
 	}
 	c.Notice(target, "** To request a file, type \"/MSG <bot> XDCC SEND #<n>\" **")
 }
@@ -91,6 +98,16 @@ func info(c Client, target, message string) {
 	c.Notice(target, fmt.Sprintf("** Pack #%d: %s (%d bytes) **", p.Number, p.Name, p.Size))
 	if p.Desc != "" {
 		c.Notice(target, fmt.Sprintf("**   %s **", p.Desc))
+	}
+	if md5OK, crc32OK := c.Checksums(); md5OK || crc32OK {
+		if md5OK {
+			if md5 := p.MD5(); md5 != "" {
+				c.Notice(target, fmt.Sprintf("**   md5: %s **", md5))
+			}
+		}
+		if crc32OK {
+			c.Notice(target, fmt.Sprintf("**   crc32: %08x **", p.CRC32()))
+		}
 	}
 }
 

@@ -42,6 +42,29 @@ func Listen(start, limit int) (net.Listener, int, error) {
 	return nil, 0, fmt.Errorf("no free DCC port in %d-%d", start, limit)
 }
 
+// TCPConfig carries optional TCP socket tuning for DCC sockets.
+type TCPConfig struct {
+	NoDelay    bool  // set TCP_NODELAY
+	BufferSize int64 // SO_SNDBUF/SO_RCVBUF in bytes (0 = OS default)
+}
+
+// ConfigureTCP applies nodelay and send/receive buffer sizes to a TCP
+// connection. It is best-effort and no-ops on non-TCP connections.
+func ConfigureTCP(conn net.Conn, cfg TCPConfig) {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	if cfg.NoDelay {
+		_ = tc.SetNoDelay(true)
+	}
+	if cfg.BufferSize > 0 {
+		n := int(cfg.BufferSize)
+		_ = tc.SetReadBuffer(n)
+		_ = tc.SetWriteBuffer(n)
+	}
+}
+
 // BuildDCCSend returns the CTCP payload for an active DCC SEND (bot listens).
 func BuildDCCSend(filename string, ipInt uint32, port int, size int64) string {
 	return fmt.Sprintf("\x01DCC SEND %s %d %d %d\x01", filename, ipInt, port, size)
@@ -79,14 +102,16 @@ func SendFileFrom(ln net.Listener, path string, offset int64) error {
 }
 
 // ConnectAndSend dials ip:port and streams the file into the connection
-// (reverse/passive DCC: the bot connects out to the downloader).
-func ConnectAndSend(ip string, port int, path string, offset int64) error {
+// (reverse/passive DCC: the bot connects out to the downloader). cfg applies
+// optional TCP socket tuning.
+func ConnectAndSend(ip string, port int, path string, offset int64, cfg TCPConfig) error {
 	addr := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
 	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	ConfigureTCP(conn, cfg)
 	return StreamTo(conn, path, offset)
 }
 

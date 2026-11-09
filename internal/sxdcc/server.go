@@ -142,6 +142,28 @@ func (s *Server) Pin() string {
 	return s.id.Pin
 }
 
+// RegenerateKey replaces the server identity with a fresh self-signed Ed25519
+// leaf for the current advertised IP, persists it to the configured cert/key
+// files, and swaps it into use (new connections verify against the new pin).
+// It returns the new SPKI pin.
+func (s *Server) RegenerateKey() (string, error) {
+	s.addrMu.Lock()
+	ipStr := dcc.IPFromInt(s.advertiseIP)
+	s.addrMu.Unlock()
+
+	id, err := GenerateIdentity(ipStr)
+	if err != nil {
+		return "", err
+	}
+	if err := writeIdentity(s.cfg.CertFile, s.cfg.KeyFile, id.Cert); err != nil {
+		return "", err
+	}
+	s.idMu.Lock()
+	s.id = id
+	s.idMu.Unlock()
+	return id.Pin, nil
+}
+
 // SetControlPort records the bot's single shared control port, which (without a
 // VPN) is also the address advertised for active data channels.
 func (s *Server) SetControlPort(port int) {

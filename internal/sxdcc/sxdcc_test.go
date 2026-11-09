@@ -48,6 +48,45 @@ func TestPinEqual(t *testing.T) {
 	}
 }
 
+func TestRegenerateKey(t *testing.T) {
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+
+	id, err := GenerateIdentity("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeIdentity(certFile, keyFile, id.Cert); err != nil {
+		t.Fatal(err)
+	}
+	oldPin := id.Pin
+
+	s := &Server{
+		cfg:         Config{CertFile: certFile, KeyFile: keyFile},
+		id:          id,
+		advertiseIP: 2130706433, // 127.0.0.1
+	}
+	pin, err := s.RegenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin == oldPin {
+		t.Fatal("regenerate should produce a new pin")
+	}
+	if !strings.HasPrefix(pin, "sha256:") {
+		t.Fatalf("pin = %q", pin)
+	}
+
+	reloaded, err := LoadOrCreateIdentity(certFile, keyFile, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !PinEqual(reloaded.Pin, pin) {
+		t.Fatalf("persisted pin %q != regenerated pin %q", reloaded.Pin, pin)
+	}
+}
+
 func TestParseRendezvousAndTrigger(t *testing.T) {
 	line := BuildRendezvous(35605696, 40443, "tok", "sha256:abc")
 	ip, port, tok, pin, err := ParseRendezvous(line)
