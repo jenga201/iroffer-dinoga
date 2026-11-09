@@ -123,7 +123,7 @@ func TestPacklistTxt(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	got := strings.TrimSpace(rr.Body.String())
-	want := "#1 6 alpha.txt\n#2 6 beta.txt\n#3 12 gamma.md"
+	want := "#1 0x [<1k] alpha.txt\n#2 0x [<1k] beta.txt\n#3 0x [<1k] gamma.md"
 	if got != want {
 		t.Errorf("packlist.txt =\n%s\nwant:\n%s", got, want)
 	}

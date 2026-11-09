@@ -29,7 +29,7 @@ func (s *stubClient) Packlist() []packs.Pack          { return s.packlist }
 func (s *stubClient) CancelQueued(target string) bool { return s.cancelled }
 func (s *stubClient) PacklistURL() string             { return "" }
 func (s *stubClient) Checksums() (bool, bool)         { return s.md5OK, s.crc32OK }
-func (s *stubClient) ListHeader() string              { return "3 of 3 slots open" }
+func (s *stubClient) ListHeader() []string            { return []string{"** 0 packs ** 3 of 3 slots open"} }
 func (s *stubClient) ListFooter() string              { return "Total Offered: 0B  Total Transferred: 0B" }
 
 func threePacks() []packs.Pack {
@@ -124,7 +124,7 @@ func TestListDescription(t *testing.T) {
 	c := &stubClient{packlist: pl}
 	Handle(c, "u", "xdcc list")
 	joined := strings.Join(c.notices, "\n")
-	if !strings.Contains(joined, "#2     20 [b.bin] second pack") {
+	if !strings.Contains(joined, "#2 0x [<1k] second pack") {
 		t.Fatalf("list notices = %v", c.notices)
 	}
 }

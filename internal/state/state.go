@@ -16,7 +16,7 @@ type PackRecord struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	Desc   string `json:"desc,omitempty"`
-	Sent   int64  `json:"sent,omitempty"` // cumulative bytes transferred for this pack
+	Gets   int64  `json:"gets,omitempty"` // times this pack has been transferred
 }
 
 // File is the persisted state payload.

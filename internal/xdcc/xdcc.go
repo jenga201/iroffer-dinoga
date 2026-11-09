@@ -26,9 +26,9 @@ type Client interface {
 	// Checksums reports whether "xdcc info" should advertise MD5 and CRC32.
 	// The bot computes them lazily; nomd5sum/nocrc32 disable each.
 	Checksums() (md5 bool, crc32 bool)
-	// ListHeader returns the classic list header ("N of M slots open").
-	ListHeader() string
-	// ListFooter returns the totals footer ("Total Offered/Transferred").
+	// ListHeader returns the classic list header lines (the iroffer "** ... **"
+	// framing). ListFooter returns the totals footer line.
+	ListHeader() []string
 	ListFooter() string
 }
 
@@ -52,20 +52,13 @@ func Handle(c Client, target, message string) {
 
 func sendList(c Client, target string) {
 	pl := c.Packlist()
-	c.Notice(target, fmt.Sprintf("** %s **", c.ListHeader()))
-	c.Notice(target, fmt.Sprintf("** %d pack(s) **  (use: xdcc send #<n>)", len(pl)))
-	if url := c.PacklistURL(); url != "" {
-		c.Notice(target, fmt.Sprintf("** Packlist: %s **", url))
+	for _, h := range c.ListHeader() {
+		c.Notice(target, h)
 	}
 	for _, p := range pl {
-		if p.Desc != "" {
-			c.Notice(target, fmt.Sprintf("#%d %6d [%s] %s", p.Number, p.Size, p.Name, p.Desc))
-		} else {
-			c.Notice(target, fmt.Sprintf("#%d %6d [%s]", p.Number, p.Size, p.Name))
-		}
+		c.Notice(target, fmt.Sprintf("#%d %dx [%s] %s", p.Number, p.Gets, packs.SizeString(p.Size), p.DisplayName()))
 	}
 	c.Notice(target, c.ListFooter())
-	c.Notice(target, "** To request a file, type \"/MSG <bot> XDCC SEND #<n>\" **")
 }
 
 func send(c Client, target, message string) {

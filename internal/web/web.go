@@ -21,9 +21,9 @@ type Config struct {
 	// one of these networks are always rejected with 403, even when they also
 	// match Allow.
 	Deny []*net.IPNet
-	// Header, when non-nil, supplies the list header line (e.g. "N of M slots
-	// open"), emitted above the pack list.
-	Header func() string
+	// Header, when non-nil, supplies the list header lines (the iroffer "** ... **"
+	// framing), emitted above the pack list.
+	Header func() []string
 	// Footer, when non-nil, supplies the totals footer line (e.g. "Total
 	// Offered ... Total Transferred ..."), emitted below the pack list.
 	Footer func() string
@@ -177,10 +177,12 @@ func (h *handler) renderList(w http.ResponseWriter, q string) {
 func (h *handler) servePacklistTxt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if h.cfg.Header != nil {
-		fmt.Fprintf(w, "%s\n", h.cfg.Header())
+		for _, line := range h.cfg.Header() {
+			fmt.Fprintf(w, "%s\n", line)
+		}
 	}
 	for _, p := range h.packs() {
-		fmt.Fprintf(w, "#%d %d %s\n", p.Number, p.Size, p.Name)
+		fmt.Fprintf(w, "#%d %dx [%s] %s\n", p.Number, p.Gets, packs.SizeString(p.Size), p.DisplayName())
 	}
 	if h.cfg.Footer != nil {
 		fmt.Fprintf(w, "%s\n", h.cfg.Footer())

@@ -103,20 +103,20 @@ func TestStatsPersistence(t *testing.T) {
 	c := &Client{
 		cfg:      cfg,
 		resume:   map[string]int64{},
-		sent:     map[string]int64{},
+		gets:     map[string]int64{},
 		packlist: []packs.Pack{{Number: 1, Name: "a.bin", Path: "/data/a.bin", Size: 100}},
 	}
 	c.RecordSent("/data/a.bin", 50)
 	c.RecordSent("/data/a.bin", 25)
 	c.persist()
 
-	c2 := &Client{cfg: cfg, resume: map[string]int64{}, sent: map[string]int64{}}
+	c2 := &Client{cfg: cfg, resume: map[string]int64{}, gets: map[string]int64{}}
 	c2.loadState()
 	if c2.totalSent != 75 {
 		t.Fatalf("aggregate totalSent = %d, want 75", c2.totalSent)
 	}
-	if c2.sent["/data/a.bin"] != 75 {
-		t.Fatalf("per-pack sent = %v", c2.sent)
+	if c2.gets["/data/a.bin"] != 2 {
+		t.Fatalf("per-pack gets = %v", c2.gets)
 	}
 	if c.TotalOffered() != 100 {
 		t.Fatalf("TotalOffered = %d, want 100", c.TotalOffered())

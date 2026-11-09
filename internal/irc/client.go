@@ -78,8 +78,11 @@ type Client struct {
 	descs    map[string]string     // pack descriptions (chdesc), keyed by path
 	excluded map[string]bool       // paths removed from the list (removepack)
 	resume   map[string]int64      // per-pack resume offsets (path -> bytes)
-	sent     map[string]int64      // per-pack transferred bytes (path -> bytes)
+	gets     map[string]int64      // per-pack transfer count (path -> times)
 	totalSent int64                // aggregate bytes transferred
+
+	bwMu sync.Mutex // guards bw
+	bw   []bwSample // bandwidth sampler (time, cumulative bytes)
 
 	tmu       sync.Mutex // guards transfers/nextToken
 	transfers map[int]*transfer
@@ -752,8 +755,8 @@ func (nc *netConn) Checksums() (bool, bool) {
 	return !nc.c.cfg.NoMD5Sum, !nc.c.cfg.NoCRC32
 }
 
-func (nc *netConn) ListHeader() string { return nc.c.XDCCListHeader() }
-func (nc *netConn) ListFooter() string { return nc.c.StatsFooter() }
+func (nc *netConn) ListHeader() []string { return nc.c.XDCCListHeader() }
+func (nc *netConn) ListFooter() string   { return nc.c.StatsFooter() }
 
 // --- shared state ---
 
@@ -1003,25 +1006,55 @@ func (c *Client) clearResume(path string) {
 	c.mu.Unlock()
 }
 
-// RecordSent adds the transferred byte count to the aggregate and per-pack
-// stats (persisted in the state file). It is the sxdcc.Host.RecordSent impl.
+// bwSample is one bandwidth-sampler point (time -> cumulative transferred bytes).
+type bwSample struct {
+	t time.Time
+	n int64
+}
+
+// RecordSent records one completed transfer: increments the per-pack transfer
+// count and the aggregate byte count, and feeds the bandwidth sampler.
 func (c *Client) RecordSent(path string, bytes int64) {
 	if bytes <= 0 {
 		return
 	}
 	c.mu.Lock()
-	if c.sent == nil {
-		c.sent = map[string]int64{}
+	if c.gets == nil {
+		c.gets = map[string]int64{}
 	}
-	c.sent[path] += bytes
+	c.gets[path]++
 	c.totalSent += bytes
 	for i := range c.packlist {
 		if c.packlist[i].Path == path {
-			c.packlist[i].Sent = c.sent[path]
+			c.packlist[i].Gets = c.gets[path]
 			break
 		}
 	}
 	c.mu.Unlock()
+
+	c.bwMu.Lock()
+	c.bw = append(c.bw, bwSample{t: time.Now(), n: c.totalSent})
+	c.bwMu.Unlock()
+}
+
+// currentKBPS returns the recent transfer bandwidth in kB/s (a ~15s window).
+func (c *Client) currentKBPS() float64 {
+	c.bwMu.Lock()
+	defer c.bwMu.Unlock()
+	cutoff := time.Now().Add(-15 * time.Second)
+	i := 0
+	for i < len(c.bw) && c.bw[i].t.Before(cutoff) {
+		i++
+	}
+	c.bw = c.bw[i:]
+	if len(c.bw) < 2 {
+		return 0
+	}
+	dt := c.bw[len(c.bw)-1].t.Sub(c.bw[0].t).Seconds()
+	if dt < 1 {
+		dt = 1
+	}
+	return float64(c.bw[len(c.bw)-1].n-c.bw[0].n) / dt / 1024.0
 }
 
 // TotalOffered returns the sum of all current pack sizes (bytes).
@@ -1057,8 +1090,23 @@ func (c *Client) TransfersOpen() int {
 	return c.q.Snapshot().FreeSlots
 }
 
-// XDCCListHeader returns the classic list header "N of M slots open".
-func (c *Client) XDCCListHeader() string { return c.SlotStatus() }
+// XDCCListHeader returns the classic iroffer XDCC list header lines (the
+// "** ... **" framing, matching a_respond in iroffer_admin.c).
+func (c *Client) XDCCListHeader() []string {
+	nick := c.cfg.Nick
+	n := len(c.cfg.Networks)
+	if n > 0 {
+		nick = c.cfg.Networks[0].Nick
+	}
+	s := c.q.Snapshot()
+	return []string{
+		fmt.Sprintf("** To stop this listing, type \"/MSG %s XDCC STOP\" **", nick),
+		fmt.Sprintf("** %d packs ** %d of %d slots open", len(c.Packlist()), s.FreeSlots, c.cfg.SlotsMax),
+		fmt.Sprintf("** Bandwidth Usage ** Current: %.1fkB/s", c.currentKBPS()),
+		fmt.Sprintf("** To request a file, type \"/MSG %s XDCC SEND x\" **", nick),
+		fmt.Sprintf("** To request details, type \"/MSG %s XDCC INFO x\" **", nick),
+	}
+}
 
 // SXDCCListHeader returns the secure list header "N transfers open".
 func (c *Client) SXDCCListHeader() string {
@@ -1068,29 +1116,13 @@ func (c *Client) SXDCCListHeader() string {
 // StatsFooter returns the iroffer-style totals line.
 func (c *Client) StatsFooter() string {
 	return fmt.Sprintf("Total Offered: %sB  Total Transferred: %sB",
-		humanBytes(c.TotalOffered()), humanBytes(c.TotalTransferred()))
+		packs.SizeString(c.TotalOffered()), packs.SizeString(c.TotalTransferred()))
 }
 
 // ListHeader / ListFooter satisfy the sxdcc.Host interface (the "N transfers
 // open" header + totals footer for the secure LIST reply).
 func (c *Client) ListHeader() string { return c.SXDCCListHeader() }
 func (c *Client) ListFooter() string { return c.StatsFooter() }
-
-// humanBytes renders a byte count in the iroffer size style ("12.0M"), used by
-// the totals footer (the "B" suffix is appended by the caller).
-func humanBytes(n int64) string {
-	const unit = int64(1024)
-	if n < unit {
-		return fmt.Sprintf("%d", n)
-	}
-	div := unit
-	exp := 0
-	for m := n / unit; m >= unit && exp < 5; m /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f%c", float64(n)/float64(div), "KMGTP"[exp])
-}
 
 // diskFreeBytes returns the free disk space (bytes) available on the filesystem
 // containing dir. Linux-only (syscall.Statfs); the bot only builds for Linux.

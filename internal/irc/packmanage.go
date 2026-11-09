@@ -65,12 +65,12 @@ func (c *Client) loadState() {
 		c.resume = f.Resume
 	}
 	c.totalSent = f.TotalSent
-	if c.sent == nil {
-		c.sent = map[string]int64{}
+	if c.gets == nil {
+		c.gets = map[string]int64{}
 	}
 	for _, rec := range append(f.Packs, f.Extras...) {
-		if rec.Sent > 0 {
-			c.sent[rec.Path] = rec.Sent
+		if rec.Gets > 0 {
+			c.gets[rec.Path] = rec.Gets
 		}
 	}
 }
@@ -138,7 +138,7 @@ func (c *Client) mergeLocked(disk []packs.Pack) []packs.Pack {
 		if d := c.descs[p.Path]; d != "" {
 			p.Desc = d
 		}
-		p.Sent = c.sent[p.Path]
+		p.Gets = c.gets[p.Path]
 		byPath[p.Path] = p
 	}
 	for path, p := range c.extras {
@@ -149,14 +149,14 @@ func (c *Client) mergeLocked(disk []packs.Pack) []packs.Pack {
 			if existing.Desc == "" {
 				existing.Desc = p.Desc
 			}
-			existing.Sent = c.sent[path]
+			existing.Gets = c.gets[path]
 			byPath[path] = existing
 			continue
 		}
 		if d := c.descs[path]; d != "" {
 			p.Desc = d
 		}
-		p.Sent = c.sent[path]
+		p.Gets = c.gets[path]
 		byPath[path] = p
 	}
 
@@ -361,7 +361,7 @@ func packRecord(p packs.Pack) state.PackRecord {
 		Path:   p.Path,
 		Size:   p.Size,
 		Desc:   p.Desc,
-		Sent:   p.Sent,
+		Gets:   p.Gets,
 	}
 }
 

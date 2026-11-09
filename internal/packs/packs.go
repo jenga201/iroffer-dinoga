@@ -35,7 +35,7 @@ type Pack struct {
 	Size    int64
 	ModTime time.Time
 	Desc    string // optional operator/user-facing description (set by `chdesc`)
-	Sent    int64  // cumulative bytes transferred (tracked by the bot, not from disk)
+	Gets    int64  // times this pack has been transferred (tracked by the bot, not from disk)
 
 	hash *hashState // memoized checksums; shared by copies of this pack
 }
@@ -307,6 +307,38 @@ func fileHashes(path string) (string, uint32, error) {
 		return "", 0, err
 	}
 	return fmt.Sprintf("%x", md5h.Sum(nil)), crc32h.Sum32(), nil
+}
+
+// DisplayName returns the pack's user-facing name: the description when set
+// (chdesc), otherwise the filename.
+func (p Pack) DisplayName() string {
+	if p.Desc != "" {
+		return p.Desc
+	}
+	return p.Name
+}
+
+// SizeString renders a byte count in iroffer's sizestr style: "<1k", integer
+// "NNNK", or "N.NM"/"NNNM" (and G/T/P following the same <9.5 threshold).
+func SizeString(n int64) string {
+	if n <= 0 {
+		return "0"
+	}
+	if n < 1024 {
+		return "<1k"
+	}
+	val := float64(n)
+	units := "KMGTP"
+	for i := 0; i < len(units); i++ {
+		val /= 1024.0
+		if i > 0 && val < 9.5 {
+			return fmt.Sprintf("%.1f%c", val, units[i])
+		}
+		if val < 999.5 {
+			return fmt.Sprintf("%.0f%c", val, units[i])
+		}
+	}
+	return fmt.Sprintf("%.0fE", val)
 }
 
 // Less reports whether a sorts before b using the natural (strnatcmp-style)
