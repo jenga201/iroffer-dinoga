@@ -21,12 +21,19 @@ import (
 )
 
 // Host is the interface the surrounding bot implements so the SXDCC server can
-// list packs, look them up, open their files, and log.
+// list packs, look them up, open their files, log, and record transfer stats.
 type Host interface {
 	Packlist() []packs.Pack
 	PackByNumber(n int) (packs.Pack, bool)
 	OpenFile(path string) (io.ReadCloser, error)
 	Logf(format string, args ...any)
+	// RecordSent adds a completed transfer's byte count to the aggregate and
+	// per-pack statistics (persisted by the host).
+	RecordSent(path string, bytes int64)
+	// ListHeader returns the "N transfers open" header for the LIST reply.
+	ListHeader() string
+	// ListFooter returns the totals footer for the LIST reply.
+	ListFooter() string
 }
 
 // SlotGate is an optional queue/slot controller, satisfied by *queue.Manager.
@@ -472,6 +479,7 @@ func (s *Server) serveDataOverControl(ses *session, datatoken string) {
 		}
 		return
 	}
+	s.host.RecordSent(tr.pack.Path, n)
 	if tr.ses != nil {
 		tr.ses.write("DONE #%d %d sha256:%s", tr.pack.Number, n,
 			base64.RawURLEncoding.EncodeToString(h.Sum(nil)))
@@ -523,9 +531,11 @@ func (ses *session) handle(line string) bool {
 
 	switch verb {
 	case "LIST":
+		ses.write("%s", ses.s.host.ListHeader())
 		for _, p := range ses.s.host.Packlist() {
 			ses.write("#%d [%s] %s", p.Number, humanSize(p.Size), p.Name)
 		}
+		ses.write("%s", ses.s.host.ListFooter())
 		ses.write("OK")
 	case "SEND":
 		ses.handleSend(f)
@@ -791,6 +801,7 @@ func (s *Server) serveDataPassive(ses *session, datatoken, addr string) {
 		}
 		return
 	}
+	s.host.RecordSent(tr.pack.Path, n)
 	ses.write("DONE #%d %d sha256:%s", tr.pack.Number, n,
 		base64.RawURLEncoding.EncodeToString(h.Sum(nil)))
 }

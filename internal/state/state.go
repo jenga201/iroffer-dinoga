@@ -16,14 +16,16 @@ type PackRecord struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	Desc   string `json:"desc,omitempty"`
+	Sent   int64  `json:"sent,omitempty"` // cumulative bytes transferred for this pack
 }
 
 // File is the persisted state payload.
 type File struct {
-	Packs    []PackRecord     `json:"packs"`
-	Extras   []PackRecord     `json:"extras,omitempty"`
-	Excluded []string         `json:"excluded,omitempty"`
-	Resume   map[string]int64 `json:"resume,omitempty"`
+	Packs     []PackRecord     `json:"packs"`
+	Extras    []PackRecord     `json:"extras,omitempty"`
+	Excluded  []string         `json:"excluded,omitempty"`
+	Resume    map[string]int64 `json:"resume,omitempty"`
+	TotalSent int64            `json:"total_sent,omitempty"` // cumulative bytes transferred
 }
 
 // Load reads and decodes the state file at path. A missing file returns an

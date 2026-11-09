@@ -2,6 +2,7 @@ package irc
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,5 +95,33 @@ func TestResumePersistenceRoundTrip(t *testing.T) {
 	c2.clearResume("/data/a.bin")
 	if _, ok := c2.resume["/data/a.bin"]; ok {
 		t.Fatal("clearResume should remove the entry")
+	}
+}
+
+func TestStatsPersistence(t *testing.T) {
+	cfg := config.Config{StateFile: filepath.Join(t.TempDir(), "state.json")}
+	c := &Client{
+		cfg:      cfg,
+		resume:   map[string]int64{},
+		sent:     map[string]int64{},
+		packlist: []packs.Pack{{Number: 1, Name: "a.bin", Path: "/data/a.bin", Size: 100}},
+	}
+	c.RecordSent("/data/a.bin", 50)
+	c.RecordSent("/data/a.bin", 25)
+	c.persist()
+
+	c2 := &Client{cfg: cfg, resume: map[string]int64{}, sent: map[string]int64{}}
+	c2.loadState()
+	if c2.totalSent != 75 {
+		t.Fatalf("aggregate totalSent = %d, want 75", c2.totalSent)
+	}
+	if c2.sent["/data/a.bin"] != 75 {
+		t.Fatalf("per-pack sent = %v", c2.sent)
+	}
+	if c.TotalOffered() != 100 {
+		t.Fatalf("TotalOffered = %d, want 100", c.TotalOffered())
+	}
+	if c.StatsFooter() == "" || !strings.Contains(c.StatsFooter(), "Total Offered") {
+		t.Fatalf("StatsFooter = %q", c.StatsFooter())
 	}
 }

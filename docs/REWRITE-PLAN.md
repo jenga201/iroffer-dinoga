@@ -162,6 +162,7 @@ iroffer-dinoga/
 - [x] pack descriptions (no release-group grouping; `xdcclist_grouponly` is DROP) — shown inline in `LIST` and `INFO`
 - [x] `xdcclistfile` / `xdccxmlfile` export (plain-text + XML, written after each scan/persist)
 - [x] `xdcc_enable` toggle — `no` disables classic XDCC/DCC for single-port/VPN (SXDCC-only) deployments
+- [x] list header (`N of M slots open`) + totals footer (`Total Offered/Transferred`)
 
 ### 3. DCC transfer engine — KEEP ✅
 
@@ -226,6 +227,7 @@ iroffer-dinoga/
 - [x] Go `net/http` server
 - [x] list / search / JSON / MD5 / SFV endpoints (Go templates; `/dl/{name}` added)
 - [x] access control (`http_allow` / `http_deny`)
+- [x] `packlist.txt` header (`N of M slots open`) + `Total Offered/Transferred` footer, with persisted per-pack+aggregate transfer stats
 - [x] wired into the bot (`http_port`)
 
 ### 12. Admin console — KEEP* (redesign; telnet DROPped)

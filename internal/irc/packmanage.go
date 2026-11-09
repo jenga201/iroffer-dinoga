@@ -64,6 +64,15 @@ func (c *Client) loadState() {
 	if f.Resume != nil {
 		c.resume = f.Resume
 	}
+	c.totalSent = f.TotalSent
+	if c.sent == nil {
+		c.sent = map[string]int64{}
+	}
+	for _, rec := range append(f.Packs, f.Extras...) {
+		if rec.Sent > 0 {
+			c.sent[rec.Path] = rec.Sent
+		}
+	}
 }
 
 // persist snapshots the current pack list (plus extras, descriptions, resume
@@ -92,10 +101,11 @@ func (c *Client) persist() {
 	c.mu.RUnlock()
 
 	if err := state.Save(c.cfg.StateFile, &state.File{
-		Packs:    packsSlice,
-		Extras:   extras,
-		Excluded: excluded,
-		Resume:   resume,
+		Packs:     packsSlice,
+		Extras:    extras,
+		Excluded:  excluded,
+		Resume:    resume,
+		TotalSent: c.totalSent,
 	}); err != nil {
 		log.Printf("state save: %v", err)
 	}
@@ -128,6 +138,7 @@ func (c *Client) mergeLocked(disk []packs.Pack) []packs.Pack {
 		if d := c.descs[p.Path]; d != "" {
 			p.Desc = d
 		}
+		p.Sent = c.sent[p.Path]
 		byPath[p.Path] = p
 	}
 	for path, p := range c.extras {
@@ -138,12 +149,14 @@ func (c *Client) mergeLocked(disk []packs.Pack) []packs.Pack {
 			if existing.Desc == "" {
 				existing.Desc = p.Desc
 			}
+			existing.Sent = c.sent[path]
 			byPath[path] = existing
 			continue
 		}
 		if d := c.descs[path]; d != "" {
 			p.Desc = d
 		}
+		p.Sent = c.sent[path]
 		byPath[path] = p
 	}
 
@@ -348,6 +361,7 @@ func packRecord(p packs.Pack) state.PackRecord {
 		Path:   p.Path,
 		Size:   p.Size,
 		Desc:   p.Desc,
+		Sent:   p.Sent,
 	}
 }
 

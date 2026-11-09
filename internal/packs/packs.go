@@ -35,6 +35,7 @@ type Pack struct {
 	Size    int64
 	ModTime time.Time
 	Desc    string // optional operator/user-facing description (set by `chdesc`)
+	Sent    int64  // cumulative bytes transferred (tracked by the bot, not from disk)
 
 	hash *hashState // memoized checksums; shared by copies of this pack
 }

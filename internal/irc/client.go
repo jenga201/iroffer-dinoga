@@ -78,6 +78,8 @@ type Client struct {
 	descs    map[string]string     // pack descriptions (chdesc), keyed by path
 	excluded map[string]bool       // paths removed from the list (removepack)
 	resume   map[string]int64      // per-pack resume offsets (path -> bytes)
+	sent     map[string]int64      // per-pack transferred bytes (path -> bytes)
+	totalSent int64                // aggregate bytes transferred
 
 	tmu       sync.Mutex // guards transfers/nextToken
 	transfers map[int]*transfer
@@ -673,6 +675,20 @@ func (nc *netConn) handleSXDCC(from, message string) {
 		nc.Notice(from, "** SXDCC is not enabled **")
 		return
 	}
+
+	// "sxdcc list" answers with the HTTP packlist URL instead of a TLS
+	// rendezvous: only a URL crosses IRC (no filenames), so plain IRC clients
+	// can open the packlist in a browser and SXDCC.md REQ-10 still holds. The
+	// actual file data stays on TLS via "sxdcc send".
+	if verb, _, ok := sxdcc.ParseTrigger(message); ok && verb == "list" {
+		if url := nc.c.PacklistURL(); url != "" {
+			nc.Notice(from, "** Packlist: "+url+" **")
+		} else {
+			nc.Notice(from, "** No packlist URL available yet **")
+		}
+		return
+	}
+
 	line, token, err := s.Rendezvous()
 	if err != nil {
 		nc.Notice(from, "** SXDCC error: "+err.Error()+" **")
@@ -735,6 +751,9 @@ func (nc *netConn) CancelQueued(target string) bool {
 func (nc *netConn) Checksums() (bool, bool) {
 	return !nc.c.cfg.NoMD5Sum, !nc.c.cfg.NoCRC32
 }
+
+func (nc *netConn) ListHeader() string { return nc.c.XDCCListHeader() }
+func (nc *netConn) ListFooter() string { return nc.c.StatsFooter() }
 
 // --- shared state ---
 
@@ -935,6 +954,7 @@ func (c *Client) serveActive(tr *transfer) {
 		c.setResume(tr.path, offset+cw.n)
 		return
 	}
+	c.RecordSent(tr.path, cw.n)
 	c.clearResume(tr.path)
 }
 
@@ -981,6 +1001,95 @@ func (c *Client) clearResume(path string) {
 	c.mu.Lock()
 	delete(c.resume, path)
 	c.mu.Unlock()
+}
+
+// RecordSent adds the transferred byte count to the aggregate and per-pack
+// stats (persisted in the state file). It is the sxdcc.Host.RecordSent impl.
+func (c *Client) RecordSent(path string, bytes int64) {
+	if bytes <= 0 {
+		return
+	}
+	c.mu.Lock()
+	if c.sent == nil {
+		c.sent = map[string]int64{}
+	}
+	c.sent[path] += bytes
+	c.totalSent += bytes
+	for i := range c.packlist {
+		if c.packlist[i].Path == path {
+			c.packlist[i].Sent = c.sent[path]
+			break
+		}
+	}
+	c.mu.Unlock()
+}
+
+// TotalOffered returns the sum of all current pack sizes (bytes).
+func (c *Client) TotalOffered() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var sum int64
+	for _, p := range c.packlist {
+		sum += p.Size
+	}
+	return sum
+}
+
+// TotalTransferred returns the aggregate bytes transferred.
+func (c *Client) TotalTransferred() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.totalSent
+}
+
+// SlotStatus returns the classic XDCC slot header "used of total slots open".
+func (c *Client) SlotStatus() string {
+	s := c.q.Snapshot()
+	used := c.cfg.SlotsMax - s.FreeSlots
+	if used < 0 {
+		used = 0
+	}
+	return fmt.Sprintf("%d of %d slots open", s.FreeSlots, c.cfg.SlotsMax)
+}
+
+// TransfersOpen returns the SXDCC "transfers open" count (free slots).
+func (c *Client) TransfersOpen() int {
+	return c.q.Snapshot().FreeSlots
+}
+
+// XDCCListHeader returns the classic list header "N of M slots open".
+func (c *Client) XDCCListHeader() string { return c.SlotStatus() }
+
+// SXDCCListHeader returns the secure list header "N transfers open".
+func (c *Client) SXDCCListHeader() string {
+	return fmt.Sprintf("%d transfers open", c.TransfersOpen())
+}
+
+// StatsFooter returns the iroffer-style totals line.
+func (c *Client) StatsFooter() string {
+	return fmt.Sprintf("Total Offered: %sB  Total Transferred: %sB",
+		humanBytes(c.TotalOffered()), humanBytes(c.TotalTransferred()))
+}
+
+// ListHeader / ListFooter satisfy the sxdcc.Host interface (the "N transfers
+// open" header + totals footer for the secure LIST reply).
+func (c *Client) ListHeader() string { return c.SXDCCListHeader() }
+func (c *Client) ListFooter() string { return c.StatsFooter() }
+
+// humanBytes renders a byte count in the iroffer size style ("12.0M"), used by
+// the totals footer (the "B" suffix is appended by the caller).
+func humanBytes(n int64) string {
+	const unit = int64(1024)
+	if n < unit {
+		return fmt.Sprintf("%d", n)
+	}
+	div := unit
+	exp := 0
+	for m := n / unit; m >= unit && exp < 5; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%c", float64(n)/float64(div), "KMGTP"[exp])
 }
 
 // diskFreeBytes returns the free disk space (bytes) available on the filesystem
@@ -1250,7 +1359,12 @@ func (c *Client) webHandler() http.Handler {
 		log.Printf("web: http_deny: %v", err)
 		deny = nil
 	}
-	c.webHandlerCache = web.New(c.Packlist, web.Config{Allow: allow, Deny: deny})
+	c.webHandlerCache = web.New(c.Packlist, web.Config{
+		Allow:  allow,
+		Deny:   deny,
+		Header: c.XDCCListHeader,
+		Footer: c.StatsFooter,
+	})
 	return c.webHandlerCache
 }
 

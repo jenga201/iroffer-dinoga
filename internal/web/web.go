@@ -21,6 +21,12 @@ type Config struct {
 	// one of these networks are always rejected with 403, even when they also
 	// match Allow.
 	Deny []*net.IPNet
+	// Header, when non-nil, supplies the list header line (e.g. "N of M slots
+	// open"), emitted above the pack list.
+	Header func() string
+	// Footer, when non-nil, supplies the totals footer line (e.g. "Total
+	// Offered ... Total Transferred ..."), emitted below the pack list.
+	Footer func() string
 }
 
 // ParseCIDRs parses CIDR strings into []*net.IPNet. A bare IP address (no "/")
@@ -170,8 +176,14 @@ func (h *handler) renderList(w http.ResponseWriter, q string) {
 // "xdcc list" reply (http://<ip>:<port>/packlist.txt).
 func (h *handler) servePacklistTxt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if h.cfg.Header != nil {
+		fmt.Fprintf(w, "%s\n", h.cfg.Header())
+	}
 	for _, p := range h.packs() {
 		fmt.Fprintf(w, "#%d %d %s\n", p.Number, p.Size, p.Name)
+	}
+	if h.cfg.Footer != nil {
+		fmt.Fprintf(w, "%s\n", h.cfg.Footer())
 	}
 }
 

@@ -26,6 +26,10 @@ type Client interface {
 	// Checksums reports whether "xdcc info" should advertise MD5 and CRC32.
 	// The bot computes them lazily; nomd5sum/nocrc32 disable each.
 	Checksums() (md5 bool, crc32 bool)
+	// ListHeader returns the classic list header ("N of M slots open").
+	ListHeader() string
+	// ListFooter returns the totals footer ("Total Offered/Transferred").
+	ListFooter() string
 }
 
 // Handle routes one private message to the bot (e.g. "xdcc list", "xdcc send #1").
@@ -48,6 +52,7 @@ func Handle(c Client, target, message string) {
 
 func sendList(c Client, target string) {
 	pl := c.Packlist()
+	c.Notice(target, fmt.Sprintf("** %s **", c.ListHeader()))
 	c.Notice(target, fmt.Sprintf("** %d pack(s) **  (use: xdcc send #<n>)", len(pl)))
 	if url := c.PacklistURL(); url != "" {
 		c.Notice(target, fmt.Sprintf("** Packlist: %s **", url))
@@ -59,6 +64,7 @@ func sendList(c Client, target string) {
 			c.Notice(target, fmt.Sprintf("#%d %6d [%s]", p.Number, p.Size, p.Name))
 		}
 	}
+	c.Notice(target, c.ListFooter())
 	c.Notice(target, "** To request a file, type \"/MSG <bot> XDCC SEND #<n>\" **")
 }
 

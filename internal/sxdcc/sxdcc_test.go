@@ -183,6 +183,9 @@ func (h *stubHost) PackByNumber(n int) (packs.Pack, bool) {
 }
 func (h *stubHost) OpenFile(p string) (io.ReadCloser, error) { return os.Open(p) }
 func (h *stubHost) Logf(format string, args ...any)          {}
+func (h *stubHost) RecordSent(path string, bytes int64)      {}
+func (h *stubHost) ListHeader() string                       { return "1 transfers open" }
+func (h *stubHost) ListFooter() string                       { return "Total Offered: 0B  Total Transferred: 0B" }
 
 func TestControlAndDataRoundtrip(t *testing.T) {
 	dir := t.TempDir()
@@ -275,7 +278,11 @@ func TestControlAndDataRoundtrip(t *testing.T) {
 		}
 		listLines = append(listLines, l)
 	}
-	if len(listLines) != 2 || !strings.HasPrefix(listLines[0], "#1 ") {
+	if len(listLines) != 4 ||
+		!strings.HasPrefix(listLines[0], "1 transfer") ||
+		!strings.HasPrefix(listLines[1], "#1 ") ||
+		!strings.HasPrefix(listLines[2], "#2 ") ||
+		!strings.HasPrefix(listLines[3], "Total Offered:") {
 		t.Fatalf("list lines = %v", listLines)
 	}
 

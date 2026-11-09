@@ -29,6 +29,8 @@ func (s *stubClient) Packlist() []packs.Pack          { return s.packlist }
 func (s *stubClient) CancelQueued(target string) bool { return s.cancelled }
 func (s *stubClient) PacklistURL() string             { return "" }
 func (s *stubClient) Checksums() (bool, bool)         { return s.md5OK, s.crc32OK }
+func (s *stubClient) ListHeader() string              { return "3 of 3 slots open" }
+func (s *stubClient) ListFooter() string              { return "Total Offered: 0B  Total Transferred: 0B" }
 
 func threePacks() []packs.Pack {
 	return []packs.Pack{
