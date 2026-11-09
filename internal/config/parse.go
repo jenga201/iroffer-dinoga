@@ -144,6 +144,8 @@ func applyFile(c *Config, path string) error {
 			c.HTTPDeny = fields(value)
 		case "adminpass":
 			c.AdminPass = value
+		case "owner_nick":
+			c.OwnerNick = value
 		case "sxdcc_enable":
 			c.SXDCCEnable = yesNo(value, c.SXDCCEnable)
 		case "xdcc_enable":

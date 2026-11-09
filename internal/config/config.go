@@ -71,6 +71,7 @@ type Config struct {
 	HTTPDeny   []string
 
 	AdminPass string
+	OwnerNick string // owner_nick: answered by the SXDCC OWNER command
 
 	SXDCCEnable bool
 	CertFile    string

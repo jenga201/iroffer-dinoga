@@ -3,7 +3,9 @@ package sxdcc
 import (
 	"bufio"
 	"crypto"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +48,7 @@ type Config struct {
 	TokenTTL  time.Duration // rendezvous token lifetime
 	Passive   bool          // passive/reverse data channel (client listens, bot dials)
 	Slot      SlotGate      // optional: gate SEND on transfer slots (nil = unbounded)
+	Owner     string        // owner/contact answered by OWNER (default "dinoga")
 }
 
 func (c Config) ttl() time.Duration {
@@ -55,22 +58,63 @@ func (c Config) ttl() time.Duration {
 	return c.TokenTTL
 }
 
-// transfer is one pending or in-flight data-channel transfer.
+// transfer is one pending (queued) or in-flight data-channel transfer.
 type transfer struct {
-	pack        packs.Pack
-	passive     bool      // passive: the bot dials the client after ACCEPT
-	release     func()    // queue slot release, if gated
-	releaseOnce sync.Once // ensures release() runs exactly once
-	ses         *session  // control session that issued the transfer (for DONE/ERR)
-	claimed     bool      // data connection arrived (guarded by tmu)
+	pack    packs.Pack
+	passive bool     // passive: the bot dials the client after ACCEPT
+	ses     *session // control session that issued the transfer (for DONE/ERR)
+
+	cancel     chan struct{} // closed once on CANCEL
+	cancelOnce sync.Once
+
+	mu          sync.Mutex
+	release     func() // queue slot release, set once granted (nil while queued)
+	releaseOnce sync.Once
+	claimed     bool      // data connection arrived
+	conn        net.Conn  // data connection (set once data arrives; closed on cancel)
+}
+
+// markCanceled closes the cancel channel exactly once.
+func (tr *transfer) markCanceled() { tr.cancelOnce.Do(func() { close(tr.cancel) }) }
+
+// canceled reports whether the transfer has been cancelled.
+func (tr *transfer) canceled() bool {
+	select {
+	case <-tr.cancel:
+		return true
+	default:
+		return false
+	}
+}
+
+func (tr *transfer) setRelease(f func()) { tr.mu.Lock(); tr.release = f; tr.mu.Unlock() }
+func (tr *transfer) setConn(c net.Conn)  { tr.mu.Lock(); tr.conn = c; tr.mu.Unlock() }
+func (tr *transfer) setClaimed()         { tr.mu.Lock(); tr.claimed = true; tr.mu.Unlock() }
+func (tr *transfer) isClaimed() bool {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.claimed
+}
+
+// closeConn closes the data connection (if any) to abort an in-flight stream.
+func (tr *transfer) closeConn() {
+	tr.mu.Lock()
+	c := tr.conn
+	tr.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
 }
 
 // complete releases the transfer's queue slot exactly once, so concurrent
-// teardown paths (e.g. QUIC vs control-port fallback) cannot double-release.
+// teardown paths cannot double-release.
 func (tr *transfer) complete() {
 	tr.releaseOnce.Do(func() {
-		if tr.release != nil {
-			tr.release()
+		tr.mu.Lock()
+		f := tr.release
+		tr.mu.Unlock()
+		if f != nil {
+			f()
 		}
 	})
 }
@@ -235,18 +279,24 @@ func (s *Server) advertiseAddr() (uint32, int) {
 }
 
 // expireTransfer removes a transfer whose data connection never arrived, so a
-// client that never dials cannot leak a queue slot.
-func (s *Server) expireTransfer(datatoken string, after time.Duration) {
-	time.Sleep(after)
+// client that never dials cannot leak a queue slot. It wakes early if the
+// transfer is cancelled instead of waiting the full timeout.
+func (s *Server) expireTransfer(tr *transfer, datatoken string, after time.Duration) {
+	timedOut := false
+	select {
+	case <-tr.cancel:
+	case <-time.After(after):
+		timedOut = true
+	}
 	s.tmu.Lock()
-	tr, ok := s.transfers[datatoken]
-	if !ok || tr.claimed {
+	cur, ok := s.transfers[datatoken]
+	if !ok || cur != tr || tr.isClaimed() {
 		s.tmu.Unlock()
 		return
 	}
 	delete(s.transfers, datatoken)
 	s.tmu.Unlock()
-	if tr.ses != nil {
+	if timedOut && tr.ses != nil {
 		tr.ses.write("ERR 408 transfer timed out")
 	}
 	tr.complete()
@@ -395,9 +445,8 @@ func (s *Server) serveDataOverControl(ses *session, datatoken string) {
 		return
 	}
 
-	s.tmu.Lock()
-	tr.claimed = true
-	s.tmu.Unlock()
+	tr.setClaimed()
+	tr.setConn(ses.conn)
 
 	defer func() {
 		s.tmu.Lock()
@@ -415,15 +464,17 @@ func (s *Server) serveDataOverControl(ses *session, datatoken string) {
 	}
 	defer rc.Close()
 
-	n, err := io.Copy(ses.conn, rc)
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(ses.conn, h), rc)
 	if err != nil {
-		if tr.ses != nil {
+		if tr.ses != nil && !tr.canceled() {
 			tr.ses.write("ERR 500 %v", err)
 		}
 		return
 	}
 	if tr.ses != nil {
-		tr.ses.write("DONE #%d %d", tr.pack.Number, n)
+		tr.ses.write("DONE #%d %d sha256:%s", tr.pack.Number, n,
+			base64.RawURLEncoding.EncodeToString(h.Sum(nil)))
 	}
 }
 
@@ -489,8 +540,13 @@ func (ses *session) handle(line string) bool {
 			ses.handleBatch(f[1])
 		}
 	case "OWNER":
-		ses.write("OWNER %s", "dinoga") // delegated to host later
+		owner := ses.s.cfg.Owner
+		if owner == "" {
+			owner = "dinoga"
+		}
+		ses.write("OWNER %s", owner)
 	case "CANCEL":
+		ses.s.cancelSession(ses, cancelPackArg(f))
 		ses.write("OK")
 	case "QUIT":
 		ses.write("BYE")
@@ -524,42 +580,95 @@ func (ses *session) handleSend(f []string) {
 	}
 	ses.s.dataTokens.Add(datatoken)
 
-	// Optional queue/slot gating.
-	var release func()
-	if ses.s.cfg.Slot != nil {
-		pos, err := ses.s.cfg.Slot.Submit(ses.remote, datatoken, false)
+	// Register the transfer up front (queued state) so CANCEL can reach it, and
+	// hand the slot wait + offer to a goroutine so the control loop stays
+	// responsive while the request is queued.
+	tr := &transfer{pack: p, passive: ses.s.cfg.Passive, ses: ses, cancel: make(chan struct{})}
+	ses.s.tmu.Lock()
+	ses.s.transfers[datatoken] = tr
+	ses.s.tmu.Unlock()
+
+	go ses.s.fulfill(tr, datatoken)
+}
+
+// fulfill waits for a transfer slot (when gated), then offers the pack to the
+// client. If the transfer is cancelled while queued, it releases the slot and
+// does not offer.
+func (s *Server) fulfill(tr *transfer, datatoken string) {
+	if s.cfg.Slot != nil {
+		pos, err := s.cfg.Slot.Submit(tr.ses.remote, datatoken, false)
 		if err != nil {
-			ses.write("ERR 503 queue full")
+			tr.ses.write("ERR 503 queue full")
+			s.dropTransfer(datatoken)
 			return
 		}
 		if pos > 1 {
-			ses.write("QUEUE %d", pos)
+			tr.ses.write("QUEUE %d", pos)
 		}
-		_, _, release = ses.s.cfg.Slot.Wait()
+		_, _, release := s.cfg.Slot.Wait()
 		if pos > 1 {
-			ses.write("READY")
+			tr.ses.write("READY")
 		}
+		if tr.canceled() {
+			release()
+			s.dropTransfer(datatoken)
+			return
+		}
+		tr.setRelease(release)
 	}
 
-	if ses.s.cfg.Passive {
-		ses.s.tmu.Lock()
-		ses.s.transfers[datatoken] = &transfer{pack: p, passive: true, release: release}
-		ses.s.tmu.Unlock()
-		// Passive/reverse: the client listens; the bot dials it after ACCEPT.
+	if tr.passive {
 		// SXDCC.md §9.5 passive form has no IP: SEND #<p> <size> "<name>" 0 <token>.
-		ses.write("SEND #%d %d %q 0 %s", p.Number, p.Size, p.Name, datatoken)
+		tr.ses.write("SEND #%d %d %q 0 %s", tr.pack.Number, tr.pack.Size, tr.pack.Name, datatoken)
 		return
 	}
 
 	// Active: data rides the shared control port. The client dials the control
 	// address and sends DATA <datatoken>; serveDataOverControl streams it.
-	ses.s.tmu.Lock()
-	ses.s.transfers[datatoken] = &transfer{pack: p, release: release, ses: ses}
-	ses.s.tmu.Unlock()
+	ip, port := s.advertiseAddr()
+	tr.ses.write("SEND #%d %d %q %d %d %s", tr.pack.Number, tr.pack.Size, tr.pack.Name, ip, port, datatoken)
+	go s.expireTransfer(tr, datatoken, 2*time.Minute)
+}
 
-	ip, port := ses.s.advertiseAddr()
-	ses.write("SEND #%d %d %q %d %d %s", p.Number, p.Size, p.Name, ip, port, datatoken)
-	go ses.s.expireTransfer(datatoken, 2*time.Minute)
+// dropTransfer removes the transfer entry for datatoken (no slot release).
+func (s *Server) dropTransfer(datatoken string) {
+	s.tmu.Lock()
+	delete(s.transfers, datatoken)
+	s.tmu.Unlock()
+}
+
+// cancelPackArg parses an optional "#<pack>" argument from a CANCEL command,
+// returning 0 when absent or malformed (cancel-all).
+func cancelPackArg(f []string) int {
+	if len(f) < 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(f[1], "#"))
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
+// cancelSession cancels the session's transfers matching pack (0 = all): queued
+// transfers are marked so fulfill releases the slot without offering; in-flight
+// transfers have their data connection closed to abort the stream.
+func (s *Server) cancelSession(ses *session, pack int) {
+	s.tmu.Lock()
+	var targets []*transfer
+	for datatoken, tr := range s.transfers {
+		if tr.ses == ses && (pack == 0 || tr.pack.Number == pack) {
+			delete(s.transfers, datatoken)
+			targets = append(targets, tr)
+		}
+	}
+	s.tmu.Unlock()
+
+	for _, tr := range targets {
+		tr.markCanceled()
+		tr.closeConn()
+		tr.complete()
+	}
 }
 
 // handleAccept handles the client's passive-listen reply:
@@ -574,12 +683,19 @@ func (ses *session) handleAccept(f []string) {
 
 	ses.s.tmu.Lock()
 	tr := ses.s.transfers[datatoken]
-	if tr == nil || !tr.passive {
+	if tr == nil || !tr.passive || tr.canceled() {
 		ses.s.tmu.Unlock()
 		ses.write("ERR 404 unknown or non-passive transfer")
 		return
 	}
 	ses.s.tmu.Unlock()
+
+	// The datatoken is single-use (REQ-7); consume it here so a replayed ACCEPT
+	// using the same token is rejected even before the transfer map entry goes.
+	if !ses.s.dataTokens.Consume(datatoken) {
+		ses.write("ERR 401 bad data token")
+		return
+	}
 
 	ip := f[2]
 	if !strings.Contains(ip, ".") {
@@ -654,6 +770,7 @@ func (s *Server) serveDataPassive(ses *session, datatoken, addr string) {
 		return
 	}
 	defer tlsConn.Close()
+	tr.setConn(tlsConn)
 
 	if _, err := fmt.Fprintf(tlsConn, "DATA %s\r\n", datatoken); err != nil {
 		return
@@ -666,12 +783,16 @@ func (s *Server) serveDataPassive(ses *session, datatoken, addr string) {
 	}
 	defer rc.Close()
 
-	n, err := io.Copy(tlsConn, rc)
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(tlsConn, h), rc)
 	if err != nil {
-		ses.write("ERR 500 %v", err)
+		if !tr.canceled() {
+			ses.write("ERR 500 %v", err)
+		}
 		return
 	}
-	ses.write("DONE #%d %d", tr.pack.Number, n)
+	ses.write("DONE #%d %d sha256:%s", tr.pack.Number, n,
+		base64.RawURLEncoding.EncodeToString(h.Sum(nil)))
 }
 
 // humanSize renders a byte count in the XDCC "[1.2G]" style (SI, one decimal).

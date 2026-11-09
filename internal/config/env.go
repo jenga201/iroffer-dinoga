@@ -149,6 +149,10 @@ func ApplyEnvOverrides(c *Config, environ []string) []string {
 		c.AdminPass = v
 		apply("adminpass", "<redacted>")
 	}
+	if v, ok := get(env, "owner_nick"); ok && v != "" {
+		c.OwnerNick = strings.TrimSpace(v)
+		apply("owner_nick", v)
+	}
 
 	if v, ok := get(env, "sxdcc_enable"); ok && v != "" {
 		c.SXDCCEnable = yesNo(v, c.SXDCCEnable)

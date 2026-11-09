@@ -302,8 +302,123 @@ func TestControlAndDataRoundtrip(t *testing.T) {
 		t.Fatalf("data = %q, want %q", got, content)
 	}
 
-	// Control channel reports DONE.
-	expectLine("", "DONE #1 ")
+	// Control channel reports DONE with a sha256 digest.
+	done := expectLine("", "DONE #1 ")
+	if !strings.Contains(done, " sha256:") {
+		t.Fatalf("DONE missing sha256 digest: %q", done)
+	}
+}
+
+func dialControl(t *testing.T, addr string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn, bufio.NewReader(conn)
+}
+
+func TestOwnerCommand(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(&stubHost{}, Config{
+		CertFile:  filepath.Join(dir, "c.pem"),
+		KeyFile:   filepath.Join(dir, "k.pem"),
+		IP:        "127.0.0.1",
+		PortStart: 47000,
+		PortLimit: 47100,
+		Owner:     "nibl",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go s.Serve(ln)
+
+	_, token, err := s.Rendezvous()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, br := dialControl(t, ln.Addr().String())
+	if _, err := fmt.Fprintf(conn, "AUTH %s\r\n", token); err != nil {
+		t.Fatal(err)
+	}
+	if line, _ := br.ReadString('\n'); !strings.HasPrefix(line, "OK ") {
+		t.Fatalf("AUTH reply = %q", line)
+	}
+	if _, err := fmt.Fprintf(conn, "OWNER\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	line, _ := br.ReadString('\n')
+	if got := strings.TrimRight(line, "\r\n"); got != "OWNER nibl" {
+		t.Fatalf("OWNER = %q, want %q", got, "OWNER nibl")
+	}
+}
+
+func TestCancelOfferedTransfer(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("cancel me")
+	file := filepath.Join(dir, "c.bin")
+	if err := os.WriteFile(file, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := &stubHost{packs: []packs.Pack{{Number: 1, Name: "c.bin", Path: file, Size: int64(len(content))}}}
+	s, err := New(host, Config{
+		CertFile:  filepath.Join(dir, "c.pem"),
+		KeyFile:   filepath.Join(dir, "k.pem"),
+		IP:        "127.0.0.1",
+		PortStart: 48000,
+		PortLimit: 48100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go s.Serve(ln)
+
+	_, token, err := s.Rendezvous()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, br := dialControl(t, ln.Addr().String())
+	if _, err := fmt.Fprintf(conn, "AUTH %s\r\n", token); err != nil {
+		t.Fatal(err)
+	}
+	if line, _ := br.ReadString('\n'); !strings.HasPrefix(line, "OK ") {
+		t.Fatalf("AUTH reply = %q", line)
+	}
+
+	if _, err := fmt.Fprintf(conn, "SEND 1\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	sendLine, _ := br.ReadString('\n')
+	f := strings.Fields(strings.TrimRight(sendLine, "\r\n"))
+	if len(f) != 7 || f[0] != "SEND" {
+		t.Fatalf("SEND reply = %q", sendLine)
+	}
+	datatoken := f[6]
+
+	if _, err := fmt.Fprintf(conn, "CANCEL\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if line, _ := br.ReadString('\n'); strings.TrimRight(line, "\r\n") != "OK" {
+		t.Fatalf("CANCEL reply = %q", line)
+	}
+
+	s.tmu.Lock()
+	_, stillThere := s.transfers[datatoken]
+	s.tmu.Unlock()
+	if stillThere {
+		t.Fatalf("transfer %s still present after CANCEL", datatoken)
+	}
 }
 
 func TestTriggerAutoExecute(t *testing.T) {
@@ -489,6 +604,9 @@ func TestPassiveDataRoundtrip(t *testing.T) {
 		t.Fatalf("passive data = %q, want %q", got, content)
 	}
 
-	// Control channel reports DONE.
-	expectLine("", "DONE #1 ")
+	// Control channel reports DONE with a sha256 digest.
+	done := expectLine("", "DONE #1 ")
+	if !strings.Contains(done, " sha256:") {
+		t.Fatalf("DONE missing sha256 digest: %q", done)
+	}
 }

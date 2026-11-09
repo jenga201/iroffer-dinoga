@@ -1131,6 +1131,7 @@ func (c *Client) startSXDCC() error {
 		PortLimit: c.cfg.PortLimit,
 		Passive:   c.cfg.PassiveDCC,
 		Slot:      c.q,
+		Owner:     c.cfg.OwnerNick,
 	}
 	s, err := sxdcc.New(c, sxdccCfg)
 	if err != nil {

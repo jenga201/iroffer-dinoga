@@ -298,8 +298,11 @@ Spec: `IRC/dcc-protocol/SXDCC.md`.
 - [x] Control protocol: `AUTH <token>`; LIST/SEND/BATCH/INFO/OWNER/CANCEL/QUIT; status lines
   (`OK`/`ERR`/`SEND`/`DONE`/`BYE`)
 - [x] Keep filenames off IRC: pack list + filename returned over TLS only; `SEND` line carries filename + size
-- [x] Data channel: `DATA <datatoken>`; raw stream over TLS, no ACK; byte-count in `DONE`
+- [x] Data channel: `DATA <datatoken>`; raw stream over TLS, no ACK; byte-count **and `sha256:<digest>`** in `DONE`
 - [x] Passive/reverse data channel (`port 0` + `ACCEPT`; bot stays TLS server, client is TLS client)
+- [x] `CANCEL [<pack>]` — cancels queued/in-flight transfers (non-blocking SEND so a queued session stays responsive)
+- [x] `OWNER` — answered from the `owner_nick` directive
+- [x] `datatoken` single-use enforced in both active and passive paths
 - [x] Reuse `packs` for LIST/SEND via the `sxdcc.Host` interface; queue/slot gating via `SlotGate`
 - [x] Config + env: `sxdcc_enable`, cert/key location, pin publish (`IROFFER_SXDCC_*` in `config.go`)
 - [x] SXDCC client via the PircBotX fork (`org.pircbotx.sxdcc`): pin/trust/messages/TOFU/client + tests (Gradle green)

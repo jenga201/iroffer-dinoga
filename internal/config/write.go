@@ -128,6 +128,9 @@ func Write(w io.Writer, c Config) error {
 	if c.AdminPass != "" {
 		fmt.Fprintf(&b, "adminpass %s\n", c.AdminPass)
 	}
+	if c.OwnerNick != "" {
+		fmt.Fprintf(&b, "owner_nick %s\n", c.OwnerNick)
+	}
 	fmt.Fprintf(&b, "http_port %d\n", c.HTTPPort)
 	if c.UploadDir != "" {
 		fmt.Fprintf(&b, "uploaddir %s\n", c.UploadDir)
@@ -262,6 +265,7 @@ const configHeader = `# dinoga config (generated)
 
 # --- admin / web ---
 # adminpass <secret>      admin password (SDCC chat)
+# owner_nick <nick>       answered by the SXDCC OWNER command
 # http_port <port>        separate HTTP interface (0 = disabled); the packlist
 #                         is also served on the control port as /packlist.txt
 
