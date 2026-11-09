@@ -37,6 +37,21 @@ func TestIdentityAndPin(t *testing.T) {
 	}
 }
 
+func TestTLSConfigCipherPreference(t *testing.T) {
+	id, err := GenerateIdentity("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := id.TLSConfig()
+	if cfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %x, want TLS 1.3", cfg.MinVersion)
+	}
+	want := []uint16{tls.TLS_AES_256_GCM_SHA384, tls.TLS_CHACHA20_POLY1305_SHA256, tls.TLS_AES_128_GCM_SHA256}
+	if len(cfg.CipherSuites) != len(want) || cfg.CipherSuites[0] != want[0] || cfg.CipherSuites[1] != want[1] {
+		t.Fatalf("CipherSuites = %v, want AES-256-GCM first", cfg.CipherSuites)
+	}
+}
+
 func TestPinEqual(t *testing.T) {
 	if !PinEqual("sha256:abcdefghijklmnopqrstuvwxyz0123456789-ABCD", "abcdefghijklmnopqrstuvwxyz0123456789-ABCD") {
 		t.Fatal("PinEqual should ignore the sha256: prefix")
@@ -419,14 +434,13 @@ func TestPassiveDataRoundtrip(t *testing.T) {
 	_ = line
 	expectLine("AUTH "+token, "OK ")
 
-	// SEND returns the passive (port 0) form.
+	// SEND returns the passive (port 0) form: SEND #1 <size> "<name>" 0 <datatoken>.
 	sendLine := expectLine("SEND 1", "SEND #1 ")
 	fields := strings.Fields(sendLine)
-	// SEND #1 <size> "<name>" <ip> 0 <datatoken>
-	if len(fields) != 7 || fields[5] != "0" {
+	if len(fields) != 6 || fields[4] != "0" {
 		t.Fatalf("passive SEND fields = %v", fields)
 	}
-	datatoken := fields[6]
+	datatoken := fields[5]
 
 	// Client listens; tell the bot to dial us.
 	cLn, err := net.Listen("tcp4", "127.0.0.1:0")

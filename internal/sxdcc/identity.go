@@ -155,9 +155,16 @@ func fileExists(path string) bool {
 }
 
 // TLSConfig returns a TLS 1.3-only server config using the identity's cert.
+// Cipher suites are pinned to prefer AES-256-GCM then ChaCha20-Poly1305
+// (SXDCC.md §6), with AES-128-GCM last for compatibility.
 func (id *Identity) TLSConfig() *tls.Config {
 	return &tls.Config{
 		Certificates: []tls.Certificate{id.Cert},
 		MinVersion:   tls.VersionTLS13,
+		CipherSuites: []uint16{
+			tls.TLS_AES_256_GCM_SHA384,
+			tls.TLS_CHACHA20_POLY1305_SHA256,
+			tls.TLS_AES_128_GCM_SHA256,
+		},
 	}
 }

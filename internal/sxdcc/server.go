@@ -375,10 +375,9 @@ func readFirstLine(r *bufio.Reader) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// serveDataOverControl serves the data-channel fallback: the client, unable to
-// hole-punch a direct QUIC path, re-dialed the control port and sent
-// DATA <datatoken> as its first line. Any in-flight QUIC path is cancelled and
-// the pack is streamed over this connection. Completion/errors are signalled on
+// serveDataOverControl serves the active data channel: the client dials the
+// shared control port and sends DATA <datatoken> as its first line, and the
+// pack is streamed over that connection. Completion/errors are signalled on
 // the original control session (tr.ses), not on this data connection.
 func (s *Server) serveDataOverControl(ses *session, datatoken string) {
 	s.tmu.Lock()
@@ -546,9 +545,9 @@ func (ses *session) handleSend(f []string) {
 		ses.s.tmu.Lock()
 		ses.s.transfers[datatoken] = &transfer{pack: p, passive: true, release: release}
 		ses.s.tmu.Unlock()
-		// The bot responds with port 0; the client ACCEPTs with its listener.
-		ip, _ := ses.s.advertiseAddr()
-		ses.write("SEND #%d %d %q %d 0 %s", p.Number, p.Size, p.Name, ip, datatoken)
+		// Passive/reverse: the client listens; the bot dials it after ACCEPT.
+		// SXDCC.md §9.5 passive form has no IP: SEND #<p> <size> "<name>" 0 <token>.
+		ses.write("SEND #%d %d %q 0 %s", p.Number, p.Size, p.Name, datatoken)
 		return
 	}
 
